@@ -1,0 +1,9 @@
+# Release version mapping
+# Updated at release time by release/build-release.sh
+dist:
+  version: "0.0.0-dev"
+  chartVersion: "0.1.0"
+runtime:
+  tag: "dev"
+  gitSha: ""
+images: []  # Populated at release time from images.lock

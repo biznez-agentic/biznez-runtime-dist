@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Placeholder -- installer CLI populated in Phase 7
+echo "Not yet implemented. See docs/PHASES.md Phase 7."
+exit 1

@@ -1,0 +1,4 @@
+# Placeholder -- complete values schema populated in Phase 1
+# See docs/PACKAGING-PLAN.md for the full configuration contract
+global:
+  profile: eval

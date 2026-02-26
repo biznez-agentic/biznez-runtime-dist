@@ -1,0 +1,4 @@
+# Placeholder -- CIS-hardened production overrides populated in Phase 5
+# See docs/PACKAGING-PLAN.md section 8 for production hardening details
+global:
+  profile: production

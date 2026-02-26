@@ -1,0 +1,38 @@
+# Helm
+*.tgz
+helm/biznez-runtime/charts/
+
+# Docker Compose
+compose/.env
+compose/*.log
+
+# Release artifacts
+*.tar.gz
+*.sig
+checksums.sha256
+sbom-*.json
+trivy-report-*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Secrets (never commit)
+.env
+*.pem
+*.key
+cosign.key
+
+# Test output
+tests/snapshots/*.yaml
+!tests/snapshots/.gitkeep
+
+# Kind/minikube state
+kubeconfig-*

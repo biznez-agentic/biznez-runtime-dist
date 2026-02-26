@@ -1,0 +1,7 @@
+# Placeholder -- populated in Phase 1
+apiVersion: v2
+name: biznez-runtime
+description: Biznez Agentic Runtime platform
+type: application
+version: 0.1.0
+appVersion: "0.0.0-dev"

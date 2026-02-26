@@ -1,0 +1,3 @@
+Biznez Agentic Runtime installed.
+
+Placeholder -- profile-aware post-install instructions populated in Phase 2.

@@ -1,0 +1,4 @@
+# Placeholder -- populated by release/build-release.sh at release time
+# See docs/PACKAGING-PLAN.md section 6 for image manifest spec
+version: "0.0.0-dev"
+images: []
