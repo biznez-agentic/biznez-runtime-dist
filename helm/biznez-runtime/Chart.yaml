@@ -1,17 +1,7 @@
+# Placeholder -- populated in Phase 1
 apiVersion: v2
 name: biznez-runtime
-description: Biznez Agentic Runtime -- AI agent orchestration platform for on-prem and cloud Kubernetes
+description: Biznez Agentic Runtime platform
 type: application
 version: 0.1.0
 appVersion: "0.0.0-dev"
-keywords:
-  - ai
-  - agents
-  - mcp
-  - runtime
-  - platform
-home: https://github.com/biznez-agentic/biznez-runtime-dist
-sources:
-  - https://github.com/biznez-agentic/biznez-runtime-dist
-maintainers:
-  - name: Biznez Team
