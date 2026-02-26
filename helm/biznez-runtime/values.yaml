@@ -126,7 +126,8 @@ backend:
       failureThreshold: 30
 
   # Per-component security context overrides (merged with global defaults)
-  securityContext: {}
+  podSecurityContext: {}
+  containerSecurityContext: {}
 
   # Additional env vars (list of {name, value} or {name, valueFrom})
   extraEnv: []
@@ -194,7 +195,8 @@ frontend:
       failureThreshold: 3
 
   # Per-component security context overrides
-  securityContext:
+  podSecurityContext: {}
+  containerSecurityContext:
     runAsUser: 101  # nginx user
     runAsGroup: 101
 
@@ -247,9 +249,10 @@ postgres:
     poolRecycle: "1800"
 
   # Per-component security context overrides
-  securityContext:
-    runAsUser: 999
+  podSecurityContext:
     fsGroup: 999
+  containerSecurityContext:
+    runAsUser: 999
     readOnlyRootFilesystem: false
 
   # External database (used when postgres.enabled=false)
@@ -290,8 +293,10 @@ gateway:
       cpu: 500m
       memory: 512Mi
 
-  # In-cluster base URL for backend to reach gateway
-  baseUrl: "http://biznez-gateway:8080"
+  # In-cluster base URL for backend to reach gateway.
+  # Empty = auto-derived from release name (recommended).
+  # Override only if gateway is external or in a different namespace.
+  baseUrl: ""
 
   # Timeouts
   timeouts:
@@ -340,7 +345,8 @@ gateway:
     adminPort: 15000
     annotations: {}
 
-  securityContext: {}
+  podSecurityContext: {}
+  containerSecurityContext: {}
   extraEnv: []
   extraVolumes: []
   extraVolumeMounts: []

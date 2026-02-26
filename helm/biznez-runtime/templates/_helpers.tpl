@@ -274,26 +274,39 @@ Usage: {{ include "biznez.corsOrigins" . }}
 
 {{/*
 Pod security context for a component.
-Merges component-level overrides on top of global defaults.
+Merges component.podSecurityContext on top of global.podSecurityContext.
 Usage: {{ include "biznez.podSecurityContext" (dict "root" . "component" .Values.backend) | nindent 8 }}
 */}}
 {{- define "biznez.podSecurityContext" -}}
 {{- $global := .root.Values.global.podSecurityContext -}}
-{{- $override := .component.securityContext | default dict -}}
+{{- $override := .component.podSecurityContext | default dict -}}
 {{- $merged := mustMergeOverwrite (deepCopy $global) $override -}}
 {{- toYaml $merged -}}
 {{- end }}
 
 {{/*
 Container security context for a component.
-Merges component-level overrides on top of global defaults.
+Merges component.containerSecurityContext on top of global.containerSecurityContext.
 Usage: {{ include "biznez.containerSecurityContext" (dict "root" . "component" .Values.backend) | nindent 12 }}
 */}}
 {{- define "biznez.containerSecurityContext" -}}
 {{- $global := .root.Values.global.containerSecurityContext -}}
-{{- $override := .component.securityContext | default dict -}}
+{{- $override := .component.containerSecurityContext | default dict -}}
 {{- $merged := mustMergeOverwrite (deepCopy $global) $override -}}
 {{- toYaml $merged -}}
+{{- end }}
+
+{{/*
+Derive the in-cluster gateway URL.
+If gateway.baseUrl is set, use it; otherwise construct from the release name.
+Usage: {{ include "biznez.gatewayUrl" . }}
+*/}}
+{{- define "biznez.gatewayUrl" -}}
+{{- if .Values.gateway.baseUrl -}}
+  {{- .Values.gateway.baseUrl -}}
+{{- else -}}
+  {{- printf "http://%s-gateway:%s" (include "biznez.fullname" .) (toString (.Values.gateway.service.port | default 8080)) -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -384,7 +397,7 @@ Usage: {{ include "biznez.backend.envVars" . | nindent 12 }}
 {{- end }}
 {{- if .Values.gateway.enabled }}
 - name: AGENT_GATEWAY_URL
-  value: {{ .Values.gateway.baseUrl | quote }}
+  value: {{ include "biznez.gatewayUrl" . | quote }}
 {{- end }}
 - name: FRONTEND_URL
   value: {{ include "biznez.publicUrl.frontend" . | quote }}
