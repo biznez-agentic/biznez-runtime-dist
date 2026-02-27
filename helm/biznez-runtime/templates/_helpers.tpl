@@ -196,26 +196,37 @@ Usage: {{ include "biznez.authSecretName" . }}
 {{- end }}
 
 {{/*
-Construct the DATABASE_URL.
-Precedence:
-  1. postgres.external.databaseUrl (full override)
-  2. Constructed from postgres.external fields (when postgres.enabled=false)
-  3. Constructed from embedded postgres (when postgres.enabled=true)
+Resolve the DB credentials Secret name.
+Two sources only:
+  1. postgres.external.existingSecret (operator-provided, must contain DATABASE_URL key)
+  2. {{ fullname }}-db-credentials (chart-generated)
+backend.existingSecret is NOT a source for DATABASE_URL -- clear ownership boundary.
+Usage: {{ include "biznez.dbCredentialsSecretName" . }}
+*/}}
+{{- define "biznez.dbCredentialsSecretName" -}}
+{{- if .Values.postgres.external.existingSecret -}}
+  {{- .Values.postgres.external.existingSecret -}}
+{{- else -}}
+  {{- printf "%s-db-credentials" (include "biznez.fullname" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Construct the DATABASE_URL for the chart-generated db-credentials secret.
+Only called when postgres.external.existingSecret is NOT set.
+  - Eval (postgres.enabled=true): builds URL from embedded postgres credentials
+  - External (postgres.enabled=false): requires postgres.external.databaseUrl (full URL)
 Usage: {{ include "biznez.databaseUrl" . }}
 */}}
 {{- define "biznez.databaseUrl" -}}
-{{- if .Values.postgres.external.databaseUrl -}}
-  {{- .Values.postgres.external.databaseUrl -}}
-{{- else if not .Values.postgres.enabled -}}
-  {{- $host := required "postgres.external.host is required when embedded postgres is disabled" .Values.postgres.external.host -}}
-  {{- $port := .Values.postgres.external.port | default "5432" -}}
-  {{- $db := .Values.postgres.external.database | default "biznez_platform" -}}
-  {{- $ssl := .Values.postgres.external.sslMode | default "require" -}}
-  {{- printf "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@%s:%s/%s?sslmode=%s" $host $port $db $ssl -}}
-{{- else -}}
+{{- if .Values.postgres.enabled -}}
+  {{- $user := .Values.postgres.secrets.user | default "biznez" -}}
+  {{- $password := required "postgres.secrets.password is required when postgres.enabled=true and postgres.existingSecret is not set. Generate with: openssl rand -base64 32" .Values.postgres.secrets.password -}}
   {{- $host := printf "%s-postgres" (include "biznez.fullname" .) -}}
   {{- $db := .Values.postgres.database | default "biznez_platform" -}}
-  {{- printf "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@%s:5432/%s?sslmode=disable" $host $db -}}
+  {{- printf "postgresql://%s:%s@%s:5432/%s?sslmode=disable" $user $password $host $db -}}
+{{- else -}}
+  {{- required "postgres.external.databaseUrl is required when postgres.enabled=false and postgres.external.existingSecret is not set. Provide either a full DATABASE_URL or use postgres.external.existingSecret to reference a pre-created Secret." .Values.postgres.external.databaseUrl -}}
 {{- end -}}
 {{- end }}
 
@@ -340,29 +351,16 @@ Usage: {{ include "biznez.backend.envFrom" . | nindent 12 }}
 {{/*
 Backend env vars -- shared between backend Deployment and migration Job.
 Injects secrets as individual env entries (not envFrom) for visibility and validation.
+DATABASE_URL comes from the db-credentials secret (chart-generated or operator-provided).
+POSTGRES_USER/PASSWORD are NOT injected into the backend -- backend only needs DATABASE_URL.
 Usage: {{ include "biznez.backend.envVars" . | nindent 12 }}
 */}}
 {{- define "biznez.backend.envVars" -}}
 - name: DATABASE_URL
-  value: {{ include "biznez.databaseUrl" . | quote }}
-- name: POSTGRES_USER
   valueFrom:
     secretKeyRef:
-      {{- if .Values.postgres.enabled }}
-      name: {{ include "biznez.postgresSecretName" . }}
-      {{- else }}
-      name: {{ include "biznez.postgresExternalSecretName" . }}
-      {{- end }}
-      key: POSTGRES_USER
-- name: POSTGRES_PASSWORD
-  valueFrom:
-    secretKeyRef:
-      {{- if .Values.postgres.enabled }}
-      name: {{ include "biznez.postgresSecretName" . }}
-      {{- else }}
-      name: {{ include "biznez.postgresExternalSecretName" . }}
-      {{- end }}
-      key: POSTGRES_PASSWORD
+      name: {{ include "biznez.dbCredentialsSecretName" . }}
+      key: DATABASE_URL
 - name: ENCRYPTION_KEY
   valueFrom:
     secretKeyRef:

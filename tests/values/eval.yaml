@@ -1,1 +1,18 @@
-# Placeholder -- eval test values populated in Phase 2
+# Deterministic test values for eval profile
+# All secrets are set explicitly to avoid randAlphaNum nondeterminism in helm template output.
+# DO NOT use these values in any real deployment.
+
+global:
+  profile: eval
+
+backend:
+  secrets:
+    # Real Fernet key (generated once, committed for reproducible tests)
+    encryptionKey: "_sSYK6S9JmnQcoWUZQc4Zg8rBZ52RvGyP8RRlqLhol0="
+    jwtSecret: "test-jwt-secret-for-eval-only-not-for-production"
+
+postgres:
+  enabled: true
+  secrets:
+    user: biznez
+    password: "test-postgres-password"

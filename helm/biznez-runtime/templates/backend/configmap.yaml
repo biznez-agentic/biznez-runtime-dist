@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "biznez.fullname" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+data:
+  ENVIRONMENT: {{ .Values.backend.config.environment | quote }}
+  LOG_LEVEL: {{ .Values.backend.config.logLevel | quote }}
+  JWT_ALGORITHM: {{ .Values.backend.config.jwtAlgorithm | quote }}
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: {{ .Values.backend.config.jwtAccessTokenExpireMinutes | quote }}
+  JWT_REFRESH_TOKEN_EXPIRE_DAYS: {{ .Values.backend.config.jwtRefreshTokenExpireDays | quote }}
+  BCRYPT_ROUNDS: {{ .Values.backend.config.bcryptRounds | quote }}
+  RUNTIME_NAME: {{ .Values.backend.config.runtimeName | quote }}
+  MAX_CONCURRENT_AGENTS: {{ .Values.backend.config.maxConcurrentAgents | quote }}
+  AGENT_TIMEOUT_SECONDS: {{ .Values.backend.config.agentTimeoutSeconds | quote }}
+  PROMETHEUS_ENABLED: {{ .Values.backend.config.prometheusEnabled | quote }}
+  PROMETHEUS_PORT: {{ .Values.backend.config.prometheusPort | quote }}
+  AUTH_TYPE: {{ .Values.auth.mode | quote }}
+  AUTH_ENABLED: "true"
+  LLM_PROVIDER: {{ .Values.llm.provider | quote }}
+  {{- if .Values.langfuse.enabled }}
+  LANGFUSE_ENABLED: "true"
+  LANGFUSE_HOST: {{ .Values.langfuse.host | quote }}
+  LANGFUSE_UI_URL: {{ .Values.langfuse.host | quote }}
+  {{- else }}
+  LANGFUSE_ENABLED: "false"
+  {{- end }}
+  DB_POOL_SIZE: {{ .Values.postgres.pool.size | quote }}
+  DB_MAX_OVERFLOW: {{ .Values.postgres.pool.maxOverflow | quote }}
+  DB_POOL_RECYCLE: {{ .Values.postgres.pool.poolRecycle | quote }}

@@ -1,3 +1,93 @@
-Biznez Agentic Runtime installed.
+{{- $fullname := include "biznez.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
 
-Placeholder -- profile-aware post-install instructions populated in Phase 2.
+=============================================================
+  Biznez Agentic Runtime -- {{ .Chart.Version }}
+=============================================================
+
+{{- if eq .Values.global.profile "eval" }}
+
+  Profile: EVAL (not for production use)
+
+  Access the platform:
+
+    # Backend API (port 8000)
+    kubectl port-forward svc/{{ $fullname }}-backend 8000:{{ .Values.backend.service.port | default 8000 }} -n {{ $ns }}
+
+    # Frontend UI (port 8080 -> 80)
+    kubectl port-forward svc/{{ $fullname }}-frontend 8080:{{ .Values.frontend.service.port | default 80 }} -n {{ $ns }}
+
+    # Open in browser
+    http://localhost:8080
+
+  Health check:
+
+    kubectl exec deploy/{{ $fullname }}-backend -n {{ $ns }} -- \
+      wget -qO- http://localhost:8000/api/v1/health
+
+  Authentication:
+
+    Auth mode: {{ .Values.auth.mode }}
+{{- if eq .Values.auth.mode "local" }}
+    Check backend logs for first-run setup instructions:
+      kubectl logs deploy/{{ $fullname }}-backend -n {{ $ns }} | grep -iE 'admin|password|created|bootstrap'
+{{- end }}
+
+{{- if .Values.postgres.enabled }}
+
+  Embedded PostgreSQL:
+
+    WARNING: Embedded PostgreSQL is for evaluation only.
+    Use an external managed database for production
+    (set postgres.enabled=false, provide postgres.external.existingSecret).
+{{- end }}
+
+{{- if .Values.gateway.enabled }}
+
+  Agent Gateway:
+
+    In-cluster URL: {{ include "biznez.gatewayUrl" . }}
+{{- end }}
+
+{{- else }}
+{{- /* Production profile */}}
+
+  Profile: PRODUCTION
+
+  Health check:
+
+    kubectl exec deploy/{{ $fullname }}-backend -n {{ $ns }} -- \
+      wget -qO- http://localhost:8000/api/v1/health
+
+  Public URLs:
+
+    Frontend: {{ include "biznez.publicUrl.frontend" . }}
+    API:      {{ include "biznez.publicUrl.api" . }}
+
+{{- if or (contains "localhost" (include "biznez.publicUrl.frontend" .)) (contains "localhost" (include "biznez.publicUrl.api" .)) }}
+
+    WARNING: Public URLs contain "localhost". Configure ingress or set
+    backend.config.frontendUrl / backend.config.apiUrl for production.
+{{- end }}
+
+  Authentication:
+
+    Auth mode: {{ .Values.auth.mode }}
+{{- if or (eq .Values.auth.mode "oidc") (eq .Values.auth.mode "dual") }}
+    Configure your OIDC provider per docs/OIDC-SETUP.md.
+{{- end }}
+
+  Migration:
+
+    Migration mode: {{ .Values.migration.mode }}
+{{- if eq .Values.migration.mode "manual" }}
+    Run migrations manually before verifying the deployment:
+      biznez-cli migrate --namespace {{ $ns }}
+{{- end }}
+
+  Reminders:
+
+    - Verify backup strategy is in place
+    - Review network policies (networkPolicy.enabled={{ .Values.networkPolicy.enabled }})
+    - Monitor resource usage and adjust HPA thresholds as needed
+{{- end }}
