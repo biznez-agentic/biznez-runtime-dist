@@ -1,0 +1,26 @@
+# Test values: Ingress multiHost mode with TLS + nginx streaming annotations
+# Layer on top of eval.yaml: helm template -f eval.yaml -f ingress-multihost.yaml
+
+ingress:
+  enabled: true
+  mode: multiHost
+  className: nginx
+
+  hosts:
+    - host: api.biznez.example.com
+      paths:
+        - path: /
+          service: backend
+          port: 8000
+    - host: app.biznez.example.com
+      paths:
+        - path: /
+          service: frontend
+          port: 80
+
+  tls:
+    enabled: true
+    mode: existingSecret
+    secretName: biznez-tls
+
+  applyNginxStreamingAnnotations: true

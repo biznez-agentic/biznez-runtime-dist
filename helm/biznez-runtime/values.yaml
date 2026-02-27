@@ -496,6 +496,10 @@ ingress:
   #     - path: /
   #       service: backend
   #       port: 8000
+  #   # splitByHost per-host overrides (ignored in multiHost mode):
+  #   # className: nginx-internal
+  #   # annotations:
+  #   #   nginx.ingress.kubernetes.io/ssl-redirect: "true"
   # - host: app.biznez.example.com
   #   paths:
   #     - path: /
@@ -535,6 +539,10 @@ networkPolicy:
 
   ingress:
     namespaceSelector: {}
+    # Opt-in: allow ingress from any namespace when namespaceSelector is empty.
+    # Only relevant when both networkPolicy and ingress are enabled.
+    # When false (default), namespaceSelector is required to avoid overly permissive rules.
+    allowFromAnyNamespace: false
 
   egress:
     dns:

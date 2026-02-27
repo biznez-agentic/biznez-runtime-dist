@@ -1,0 +1,19 @@
+# Test values: Gateway API HTTPRoutes
+# Layer on top of eval.yaml: helm template -f eval.yaml -f gatewayapi.yaml
+
+# Mutual exclusion: ingress must be disabled
+ingress:
+  enabled: false
+
+gatewayApi:
+  enabled: true
+
+  gatewayRef:
+    name: main-gateway
+    namespace: gateway-system
+
+  httpRoutes:
+    - hostname: api.biznez.example.com
+      service: backend
+    - hostname: app.biznez.example.com
+      service: frontend

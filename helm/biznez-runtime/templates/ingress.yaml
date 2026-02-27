@@ -1,1 +1,138 @@
-# Placeholder -- Ingress template populated in Phase 4
+{{- if .Values.ingress.enabled -}}
+{{- $fullname := include "biznez.fullname" . -}}
+{{- /*
+  Inline validation: each host must have paths, each path must have a valid service.
+*/ -}}
+{{- range .Values.ingress.hosts -}}
+  {{- if not .paths -}}
+  {{- fail (printf "ingress.hosts[].paths must contain at least one path for host '%s'" .host) -}}
+  {{- end -}}
+  {{- range .paths -}}
+    {{- $validServices := list "backend" "frontend" "gateway" -}}
+    {{- if not (has .service $validServices) -}}
+    {{- fail (printf "ingress.hosts[].paths[].service must be one of: backend, frontend, gateway. Got: '%s'" (.service | default "<empty>")) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- /*
+  Build base annotations: user-provided, streaming, cert-manager.
+*/ -}}
+{{- $annotations := dict -}}
+{{- if .Values.ingress.annotations -}}
+{{- $annotations = mustMergeOverwrite $annotations .Values.ingress.annotations -}}
+{{- end -}}
+{{- if .Values.ingress.applyNginxStreamingAnnotations -}}
+{{- $streaming := dict
+  "nginx.ingress.kubernetes.io/proxy-read-timeout" (toString .Values.backend.streaming.proxyReadTimeout)
+  "nginx.ingress.kubernetes.io/proxy-send-timeout" (toString .Values.backend.streaming.proxySendTimeout)
+  "nginx.ingress.kubernetes.io/proxy-buffering" (toString .Values.backend.streaming.proxyBuffering)
+  "nginx.ingress.kubernetes.io/proxy-body-size" (toString .Values.backend.streaming.maxBodySize)
+-}}
+{{- $annotations = mustMergeOverwrite $annotations $streaming -}}
+{{- end -}}
+{{- if and .Values.ingress.tls.enabled (eq .Values.ingress.tls.mode "certManager") -}}
+{{- $certManager := dict "cert-manager.io/cluster-issuer" .Values.ingress.tls.clusterIssuer -}}
+{{- $annotations = mustMergeOverwrite $annotations $certManager -}}
+{{- end -}}
+{{- /*
+  Resolve TLS secret name.
+*/ -}}
+{{- $tlsSecretName := "" -}}
+{{- if .Values.ingress.tls.enabled -}}
+  {{- if .Values.ingress.tls.secretName -}}
+    {{- $tlsSecretName = .Values.ingress.tls.secretName -}}
+  {{- else -}}
+    {{- $tlsSecretName = printf "%s-tls" $fullname -}}
+  {{- end -}}
+{{- end -}}
+{{- /*
+  ===== multiHost mode: single Ingress with all hosts =====
+*/ -}}
+{{- if eq .Values.ingress.mode "multiHost" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.labels" . | nindent 4 }}
+  {{- if $annotations }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - secretName: {{ $tlsSecretName }}
+      hosts:
+        {{- range .Values.ingress.hosts }}
+        - {{ .host | quote }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path | default "/" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "biznez.ingressServiceName" (dict "root" $ "service" .service) }}
+                port:
+                  number: {{ include "biznez.ingressServicePort" (dict "root" $ "service" .service "port" .port) }}
+          {{- end }}
+    {{- end }}
+{{- /*
+  ===== splitByHost mode: one Ingress per host =====
+*/ -}}
+{{- else if eq .Values.ingress.mode "splitByHost" }}
+{{- range $idx, $hostEntry := .Values.ingress.hosts }}
+{{- if $idx }}
+---
+{{- end }}
+{{- $hostAnnotations := deepCopy $annotations -}}
+{{- if $hostEntry.annotations -}}
+{{- $hostAnnotations = mustMergeOverwrite $hostAnnotations $hostEntry.annotations -}}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-{{ $hostEntry.host | replace "." "-" | trunc 63 }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "biznez.labels" $ | nindent 4 }}
+  {{- if $hostAnnotations }}
+  annotations:
+    {{- toYaml $hostAnnotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if or $hostEntry.className $.Values.ingress.className }}
+  ingressClassName: {{ ($hostEntry.className | default $.Values.ingress.className) | quote }}
+  {{- end }}
+  {{- if $.Values.ingress.tls.enabled }}
+  tls:
+    - secretName: {{ $tlsSecretName }}
+      hosts:
+        - {{ $hostEntry.host | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $hostEntry.host | quote }}
+      http:
+        paths:
+          {{- range $hostEntry.paths }}
+          - path: {{ .path | default "/" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "biznez.ingressServiceName" (dict "root" $ "service" .service) }}
+                port:
+                  number: {{ include "biznez.ingressServicePort" (dict "root" $ "service" .service "port" .port) }}
+          {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

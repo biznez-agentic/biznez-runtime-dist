@@ -241,7 +241,7 @@ Usage: {{ include "biznez.publicUrl.frontend" . }}
 {{- else if and .Values.ingress.enabled .Values.ingress.hosts -}}
   {{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled -}}
   {{- range .Values.ingress.hosts -}}
-    {{- if eq (index .paths 0).service "frontend" -}}
+    {{- if and .paths (eq (index .paths 0).service "frontend") -}}
       {{- printf "%s://%s" $scheme .host -}}
     {{- end -}}
   {{- end -}}
@@ -261,7 +261,7 @@ Usage: {{ include "biznez.publicUrl.api" . }}
 {{- else if and .Values.ingress.enabled .Values.ingress.hosts -}}
   {{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled -}}
   {{- range .Values.ingress.hosts -}}
-    {{- if eq (index .paths 0).service "backend" -}}
+    {{- if and .paths (eq (index .paths 0).service "backend") -}}
       {{- printf "%s://%s" $scheme .host -}}
     {{- end -}}
   {{- end -}}
@@ -415,4 +415,47 @@ Usage: {{ include "biznez.serviceAccountName" . }}
 {{- else -}}
   {{- include "biznez.fullname" . -}}
 {{- end -}}
+{{- end }}
+
+{{/*
+Resolve the K8s service name for an ingress path entry.
+Maps shorthand ("backend", "frontend", "gateway") to {{ fullname }}-{{ service }}.
+Usage: {{ include "biznez.ingressServiceName" (dict "root" . "service" "backend") }}
+*/}}
+{{- define "biznez.ingressServiceName" -}}
+{{- printf "%s-%s" (include "biznez.fullname" .root) .service -}}
+{{- end }}
+
+{{/*
+Resolve the service port for an ingress path entry.
+Uses explicit port if provided, otherwise falls back to the component's service.port from values.
+Usage: {{ include "biznez.ingressServicePort" (dict "root" . "service" "backend" "port" 8000) }}
+*/}}
+{{- define "biznez.ingressServicePort" -}}
+{{- if .port -}}
+  {{- .port -}}
+{{- else if eq .service "backend" -}}
+  {{- .root.Values.backend.service.port | default 8000 -}}
+{{- else if eq .service "frontend" -}}
+  {{- .root.Values.frontend.service.port | default 80 -}}
+{{- else if eq .service "gateway" -}}
+  {{- .root.Values.gateway.service.port | default 8080 -}}
+{{- else -}}
+  {{- fail (printf "Unknown ingress service '%s'. Must be one of: backend, frontend, gateway" .service) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Render DNS egress rule block for NetworkPolicy.
+Reads from networkPolicy.egress.dns.* values.
+Usage: {{ include "biznez.networkPolicy.dnsEgress" . | nindent 4 }}
+*/}}
+{{- define "biznez.networkPolicy.dnsEgress" -}}
+- to:
+  - namespaceSelector:
+      {{- toYaml .Values.networkPolicy.egress.dns.namespaceSelector | nindent 6 }}
+    podSelector:
+      {{- toYaml .Values.networkPolicy.egress.dns.podSelector | nindent 6 }}
+  ports:
+    {{- toYaml .Values.networkPolicy.egress.dns.ports | nindent 4 }}
 {{- end }}
