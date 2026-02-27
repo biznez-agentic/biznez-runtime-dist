@@ -39,12 +39,6 @@ Outputs nothing -- fail-fast only. All delimiters use whitespace trimming.
   {{- fail "networkPolicy.ingress.namespaceSelector is required when both ingress and networkPolicy are enabled. Set it to match your ingress controller's namespace (e.g., {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}). Alternatively, set networkPolicy.ingress.allowFromAnyNamespace=true to allow from any namespace (less secure)." -}}
   {{- end -}}
 {{- end -}}
-{{- /* NetworkPolicy impossible config: no external egress path */ -}}
-{{- if .Values.networkPolicy.enabled -}}
-  {{- if and (not .Values.networkPolicy.egress.allowAllHttps) (not .Values.networkPolicy.egress.proxy.cidrs) (not .Values.networkPolicy.egress.externalServices.cidrs) -}}
-  {{- fail "networkPolicy is enabled but no egress path to external services is configured. Set at least one of: networkPolicy.egress.allowAllHttps=true, networkPolicy.egress.proxy.cidrs, or networkPolicy.egress.externalServices.cidrs." -}}
-  {{- end -}}
-{{- end -}}
 {{- /* Gateway API guards */ -}}
 {{- if .Values.gatewayApi.enabled -}}
   {{- if not .Values.gatewayApi.gatewayRef.name -}}
