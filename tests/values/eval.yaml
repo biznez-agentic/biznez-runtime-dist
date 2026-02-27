@@ -16,3 +16,17 @@ postgres:
   secrets:
     user: biznez
     password: "test-postgres-password"
+
+migration:
+  mode: auto
+
+# Known-good minimal gateway config matching agentgateway binary schema.
+# Uses the binds-based structure that the binary expects.
+# Copied from runtime reference: k8s/mcp-gateway/configmap.yaml (minimal version).
+gateway:
+  config:
+    binds:
+      - port: 8080
+        listeners:
+          - name: default
+            routes: []

@@ -31,8 +31,9 @@ spec:
       {{- end }}
       securityContext:
         {{- include "biznez.podSecurityContext" (dict "root" . "component" .Values.backend) | nindent 8 }}
-      {{- if .Values.backend.waitForDb.enabled }}
+      {{- if or .Values.backend.waitForDb.enabled (eq .Values.migration.mode "auto") }}
       initContainers:
+        {{- if .Values.backend.waitForDb.enabled }}
         - name: wait-for-db
           {{- $waitImage := .Values.backend.waitForDb.image }}
           {{- if and $waitImage $waitImage.repository }}
@@ -63,6 +64,35 @@ spec:
               done
               echo "ERROR: Database not ready after 60s"
               exit 1
+        {{- end }}
+        {{- if eq .Values.migration.mode "auto" }}
+        - name: run-migrations
+          image: {{ include "biznez.imageRef" (dict "root" . "image" .Values.backend.image) }}
+          imagePullPolicy: {{ include "biznez.imagePullPolicy" (dict "root" . "image" .Values.backend.image) }}
+          {{- if empty .Values.migration.containerSecurityContext }}
+          securityContext:
+            {{- include "biznez.containerSecurityContext" (dict "root" . "component" .Values.backend) | nindent 12 }}
+          {{- else }}
+          securityContext:
+            {{- toYaml .Values.migration.containerSecurityContext | nindent 12 }}
+          {{- end }}
+          workingDir: {{ .Values.migration.workingDir | default "/app" | quote }}
+          command:
+            {{- toYaml .Values.migration.command | nindent 12 }}
+          envFrom:
+            {{- include "biznez.backend.envFrom" . | nindent 12 }}
+          env:
+            {{- include "biznez.backend.envVars" . | nindent 12 }}
+          {{- if empty .Values.migration.resources }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          {{- else }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "biznez.tmpVolumeMount" . | nindent 12 }}
+        {{- end }}
       {{- end }}
       containers:
         - name: backend

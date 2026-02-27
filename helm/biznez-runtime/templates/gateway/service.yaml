@@ -1,0 +1,26 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "biznez.fullname" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "gateway") | nindent 4 }}
+  {{- with .Values.gateway.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.gateway.service.type | default "ClusterIP" }}
+  ports:
+    - name: mcp
+      port: {{ .Values.gateway.service.port | default 8080 }}
+      targetPort: mcp
+      protocol: TCP
+    - name: admin
+      port: {{ .Values.gateway.service.adminPort | default 15000 }}
+      targetPort: admin
+      protocol: TCP
+  selector:
+    {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "gateway") | nindent 4 }}
+{{- end }}

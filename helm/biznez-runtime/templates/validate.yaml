@@ -1,0 +1,8 @@
+{{- /*
+Validation guards. Always processed by Helm regardless of --show-only target.
+Outputs nothing -- fail-fast only. All delimiters use whitespace trimming.
+*/ -}}
+{{- $validModes := list "auto" "hook" "manual" -}}
+{{- if not (has .Values.migration.mode $validModes) -}}
+{{- fail (printf "migration.mode must be one of: auto, hook, manual. Got: %s" .Values.migration.mode) -}}
+{{- end -}}
