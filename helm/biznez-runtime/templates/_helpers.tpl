@@ -240,11 +240,14 @@ Usage: {{ include "biznez.publicUrl.frontend" . }}
   {{- .Values.backend.config.frontendUrl -}}
 {{- else if and .Values.ingress.enabled .Values.ingress.hosts -}}
   {{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled -}}
+  {{- $found := false -}}
   {{- range .Values.ingress.hosts -}}
-    {{- if and .paths (eq (index .paths 0).service "frontend") -}}
+    {{- if and (not $found) .paths (eq (index .paths 0).service "frontend") -}}
       {{- printf "%s://%s" $scheme .host -}}
+      {{- $found = true -}}
     {{- end -}}
   {{- end -}}
+  {{- if not $found -}}http://localhost:8080{{- end -}}
 {{- else -}}
   {{- print "http://localhost:8080" -}}
 {{- end -}}
@@ -260,11 +263,14 @@ Usage: {{ include "biznez.publicUrl.api" . }}
   {{- .Values.backend.config.apiUrl -}}
 {{- else if and .Values.ingress.enabled .Values.ingress.hosts -}}
   {{- $scheme := ternary "https" "http" .Values.ingress.tls.enabled -}}
+  {{- $found := false -}}
   {{- range .Values.ingress.hosts -}}
-    {{- if and .paths (eq (index .paths 0).service "backend") -}}
+    {{- if and (not $found) .paths (eq (index .paths 0).service "backend") -}}
       {{- printf "%s://%s" $scheme .host -}}
+      {{- $found = true -}}
     {{- end -}}
   {{- end -}}
+  {{- if not $found -}}http://localhost:8000{{- end -}}
 {{- else -}}
   {{- print "http://localhost:8000" -}}
 {{- end -}}

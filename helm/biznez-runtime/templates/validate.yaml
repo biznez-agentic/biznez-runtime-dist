@@ -44,4 +44,12 @@ Outputs nothing -- fail-fast only. All delimiters use whitespace trimming.
   {{- if not .Values.gatewayApi.gatewayRef.name -}}
   {{- fail "gatewayApi.gatewayRef.name is required when gatewayApi is enabled" -}}
   {{- end -}}
+  {{- range .Values.gatewayApi.httpRoutes -}}
+    {{- if not .service -}}
+    {{- fail "gatewayApi.httpRoutes[].service is required" -}}
+    {{- end -}}
+    {{- if not .hostname -}}
+    {{- fail "gatewayApi.httpRoutes[].hostname is required" -}}
+    {{- end -}}
+  {{- end -}}
 {{- end -}}
