@@ -1,0 +1,106 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "biznez.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  serviceName: {{ include "biznez.fullname" . }}-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "biznez.componentLabels" (dict "root" . "component" "postgres") | nindent 8 }}
+      {{- with .Values.postgres.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.rbac.create }}
+      serviceAccountName: {{ include "biznez.serviceAccountName" . }}
+      {{- end }}
+      securityContext:
+        {{- include "biznez.podSecurityContext" (dict "root" . "component" .Values.postgres) | nindent 8 }}
+      containers:
+        - name: postgres
+          image: {{ include "biznez.imageRef" (dict "root" . "image" .Values.postgres.image) }}
+          imagePullPolicy: {{ include "biznez.imagePullPolicy" (dict "root" . "image" .Values.postgres.image) }}
+          securityContext:
+            {{- include "biznez.containerSecurityContext" (dict "root" . "component" .Values.postgres) | nindent 12 }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | default "biznez_platform" | quote }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "biznez.postgresSecretName" . }}
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "biznez.postgresSecretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - $(POSTGRES_USER)
+                - -d
+                - {{ .Values.postgres.database | default "biznez_platform" }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - $(POSTGRES_USER)
+                - -d
+                - {{ .Values.postgres.database | default "biznez_platform" }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+      {{- with .Values.postgres.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.postgres.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.postgres.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if or .Values.postgres.storageClassName .Values.global.storageClass }}
+        storageClassName: {{ .Values.postgres.storageClassName | default .Values.global.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage | default "10Gi" }}
+{{- end }}

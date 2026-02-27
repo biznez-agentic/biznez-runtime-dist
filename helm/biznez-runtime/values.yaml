@@ -125,6 +125,11 @@ backend:
       timeoutSeconds: 5
       failureThreshold: 30
 
+  # wait-for-db init container
+  waitForDb:
+    enabled: true   # Set false if init container is undesirable
+    image: {}       # Defaults to postgres.image; override for external DB scenarios
+
   # Per-component security context overrides (merged with global defaults)
   podSecurityContext: {}
   containerSecurityContext: {}
@@ -257,13 +262,13 @@ postgres:
 
   # External database (used when postgres.enabled=false)
   external:
-    host: ""
-    port: "5432"
+    host: ""       # Used by wait-for-db init container for pg_isready check
+    port: "5432"   # Used by wait-for-db init container for pg_isready check
     database: biznez_platform
     sslMode: require
-    # Full URL override -- takes precedence over individual fields above
+    # Full DATABASE_URL with credentials embedded (required when existingSecret is not set)
     databaseUrl: ""
-    # Secret containing POSTGRES_USER, POSTGRES_PASSWORD
+    # Pre-created K8s Secret containing DATABASE_URL key (production pattern)
     existingSecret: ""
 
   podAnnotations: {}

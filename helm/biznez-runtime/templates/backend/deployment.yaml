@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "biznez.fullname" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+spec:
+  replicas: {{ .Values.backend.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "biznez.componentLabels" (dict "root" . "component" "backend") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/backend/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.backend.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/backend/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if not .Values.postgres.external.existingSecret }}
+        checksum/db-credentials: {{ include (print $.Template.BasePath "/backend/db-credentials-secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.backend.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.rbac.create }}
+      serviceAccountName: {{ include "biznez.serviceAccountName" . }}
+      {{- end }}
+      securityContext:
+        {{- include "biznez.podSecurityContext" (dict "root" . "component" .Values.backend) | nindent 8 }}
+      {{- if .Values.backend.waitForDb.enabled }}
+      initContainers:
+        - name: wait-for-db
+          {{- $waitImage := .Values.backend.waitForDb.image }}
+          {{- if and $waitImage $waitImage.repository }}
+          image: {{ include "biznez.imageRef" (dict "root" . "image" $waitImage) }}
+          imagePullPolicy: {{ include "biznez.imagePullPolicy" (dict "root" . "image" $waitImage) }}
+          {{- else }}
+          image: {{ include "biznez.imageRef" (dict "root" . "image" .Values.postgres.image) }}
+          imagePullPolicy: {{ include "biznez.imagePullPolicy" (dict "root" . "image" .Values.postgres.image) }}
+          {{- end }}
+          securityContext:
+            {{- include "biznez.containerSecurityContext" (dict "root" . "component" .Values.backend) | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for database to be ready..."
+              for i in $(seq 1 12); do
+                {{- if .Values.postgres.enabled }}
+                if pg_isready -h {{ include "biznez.fullname" . }}-postgres -p 5432 -q; then
+                {{- else }}
+                if pg_isready -h {{ required "postgres.external.host is required for wait-for-db when postgres.enabled=false" .Values.postgres.external.host }} -p {{ .Values.postgres.external.port | default "5432" }} -q; then
+                {{- end }}
+                  echo "Database is ready."
+                  exit 0
+                fi
+                echo "Attempt $i/12: Database not ready, waiting 5s..."
+                sleep 5
+              done
+              echo "ERROR: Database not ready after 60s"
+              exit 1
+      {{- end }}
+      containers:
+        - name: backend
+          image: {{ include "biznez.imageRef" (dict "root" . "image" .Values.backend.image) }}
+          imagePullPolicy: {{ include "biznez.imagePullPolicy" (dict "root" . "image" .Values.backend.image) }}
+          securityContext:
+            {{- include "biznez.containerSecurityContext" (dict "root" . "component" .Values.backend) | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            {{- include "biznez.backend.envFrom" . | nindent 12 }}
+          env:
+            {{- include "biznez.backend.envVars" . | nindent 12 }}
+            {{- with .Values.backend.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.backend.probes.startup }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backend.probes.liveness }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backend.probes.readiness }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "biznez.tmpVolumeMount" . | nindent 12 }}
+            - name: app-logs
+              mountPath: /app/logs
+            {{- with .Values.backend.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- include "biznez.tmpVolume" . | nindent 8 }}
+        - name: app-logs
+          emptyDir: {}
+        {{- with .Values.backend.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.backend.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backend.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backend.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
