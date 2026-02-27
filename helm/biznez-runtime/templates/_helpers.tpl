@@ -221,7 +221,7 @@ Usage: {{ include "biznez.databaseUrl" . }}
 {{- define "biznez.databaseUrl" -}}
 {{- if .Values.postgres.enabled -}}
   {{- $user := .Values.postgres.secrets.user | default "biznez" -}}
-  {{- $password := .Values.postgres.secrets.password | default (randAlphaNum 32) -}}
+  {{- $password := required "postgres.secrets.password is required when postgres.enabled=true and postgres.existingSecret is not set. Generate with: openssl rand -base64 32" .Values.postgres.secrets.password -}}
   {{- $host := printf "%s-postgres" (include "biznez.fullname" .) -}}
   {{- $db := .Values.postgres.database | default "biznez_platform" -}}
   {{- printf "postgresql://%s:%s@%s:5432/%s?sslmode=disable" $user $password $host $db -}}
