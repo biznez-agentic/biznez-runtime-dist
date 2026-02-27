@@ -63,7 +63,7 @@ spec:
         - port: 443
           protocol: TCP
     {{- end }}
-    {{- if and .Values.networkPolicy.egress.proxy.cidrs .Values.networkPolicy.egress.proxy.ports }}
+    {{- if and .Values.networkPolicy.egress.proxy.cidrs (gt (len .Values.networkPolicy.egress.proxy.ports) 0) }}
     - to:
         {{- range .Values.networkPolicy.egress.proxy.cidrs }}
         - ipBlock:
@@ -75,7 +75,7 @@ spec:
           protocol: TCP
         {{- end }}
     {{- end }}
-    {{- if and .Values.networkPolicy.egress.externalServices.cidrs .Values.networkPolicy.egress.externalServices.ports }}
+    {{- if and .Values.networkPolicy.egress.externalServices.cidrs (gt (len .Values.networkPolicy.egress.externalServices.ports) 0) }}
     - to:
         {{- range .Values.networkPolicy.egress.externalServices.cidrs }}
         - ipBlock:
@@ -176,7 +176,7 @@ spec:
         - port: 443
           protocol: TCP
     {{- end }}
-    {{- if and .Values.networkPolicy.egress.proxy.cidrs .Values.networkPolicy.egress.proxy.ports }}
+    {{- if and .Values.networkPolicy.egress.proxy.cidrs (gt (len .Values.networkPolicy.egress.proxy.ports) 0) }}
     - to:
         {{- range .Values.networkPolicy.egress.proxy.cidrs }}
         - ipBlock:
@@ -188,7 +188,7 @@ spec:
           protocol: TCP
         {{- end }}
     {{- end }}
-    {{- if and .Values.networkPolicy.egress.externalServices.cidrs .Values.networkPolicy.egress.externalServices.ports }}
+    {{- if and .Values.networkPolicy.egress.externalServices.cidrs (gt (len .Values.networkPolicy.egress.externalServices.ports) 0) }}
     - to:
         {{- range .Values.networkPolicy.egress.externalServices.cidrs }}
         - ipBlock:
@@ -200,7 +200,7 @@ spec:
           protocol: TCP
         {{- end }}
     {{- end }}
-    {{- if and .Values.networkPolicy.egress.mcpTargets.namespaceSelectors .Values.networkPolicy.egress.mcpTargets.ports }}
+    {{- if and .Values.networkPolicy.egress.mcpTargets.namespaceSelectors (gt (len .Values.networkPolicy.egress.mcpTargets.ports) 0) }}
     {{- range .Values.networkPolicy.egress.mcpTargets.namespaceSelectors }}
     - to:
         - namespaceSelector:
