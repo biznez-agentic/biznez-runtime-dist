@@ -1,0 +1,59 @@
+{{- if eq .Values.migration.mode "hook" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "biznez.fullname" . }}-migration
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "migration") | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  {{- if ne .Values.migration.jobTtlSeconds nil }}
+  ttlSecondsAfterFinished: {{ .Values.migration.jobTtlSeconds }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "biznez.componentLabels" (dict "root" . "component" "migration") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- if .Values.rbac.create }}
+      serviceAccountName: {{ include "biznez.serviceAccountName" . }}
+      {{- end }}
+      securityContext:
+        {{- include "biznez.podSecurityContext" (dict "root" . "component" .Values.backend) | nindent 8 }}
+      containers:
+        - name: migration
+          image: {{ include "biznez.imageRef" (dict "root" . "image" .Values.backend.image) }}
+          imagePullPolicy: {{ include "biznez.imagePullPolicy" (dict "root" . "image" .Values.backend.image) }}
+          {{- if empty .Values.migration.containerSecurityContext }}
+          securityContext:
+            {{- include "biznez.containerSecurityContext" (dict "root" . "component" .Values.backend) | nindent 12 }}
+          {{- else }}
+          securityContext:
+            {{- toYaml .Values.migration.containerSecurityContext | nindent 12 }}
+          {{- end }}
+          workingDir: {{ .Values.migration.workingDir | default "/app" | quote }}
+          command:
+            {{- toYaml .Values.migration.command | nindent 12 }}
+          envFrom:
+            {{- include "biznez.backend.envFrom" . | nindent 12 }}
+          env:
+            {{- include "biznez.backend.envVars" . | nindent 12 }}
+          {{- if empty .Values.migration.resources }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          {{- else }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "biznez.tmpVolumeMount" . | nindent 12 }}
+      volumes:
+        {{- include "biznez.tmpVolume" . | nindent 8 }}
+{{- end }}

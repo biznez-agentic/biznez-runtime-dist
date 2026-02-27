@@ -126,6 +126,8 @@ backend:
       failureThreshold: 30
 
   # wait-for-db init container
+  # WARNING: Disabling waitForDb with migration.mode=auto can cause migration
+  # failures if the database is not ready when the initContainer starts.
   waitForDb:
     enabled: true   # Set false if init container is undesirable
     image: {}       # Defaults to postgres.image; override for external DB scenarios
@@ -316,15 +318,39 @@ gateway:
   #   TAVILY_API_KEY: "tvly-..."
   #   BRAVE_API_KEY: "BSA..."
 
-  # Gateway YAML configuration (rendered into ConfigMap)
+  # Gateway YAML configuration (rendered into ConfigMap).
+  # Structure must match the agentgateway binary's expected schema.
+  # The binary uses a binds-based config with listeners nested inside each bind.
+  # See: https://github.com/agentgateway/agentgateway for schema docs.
   config:
-    listeners:
-      - name: default
-        address: 0.0.0.0
-        port: 8080
-        protocol: MCP
-    targets: []
-    routes: []
+    binds:
+      - port: 8080
+        listeners:
+          - name: default
+            routes: []
+    # Example with targets and auth:
+    # binds:
+    #   - port: 8080
+    #     listeners:
+    #       - name: mcp-gateway
+    #         routes:
+    #           - name: tavily-route
+    #             matches:
+    #               - path:
+    #                   pathPrefix: "/org_dev001/tavily"
+    #             policies:
+    #               jwtAuth:
+    #                 mode: strict
+    #                 issuer: "https://idp.example.com"
+    #                 audiences: ["app-client-id"]
+    #                 jwks:
+    #                   url: "https://idp.example.com/.well-known/jwks.json"
+    #             backends:
+    #               - mcp:
+    #                   targets:
+    #                     - name: tavily-mcp
+    #                       mcp:
+    #                         host: "https://mcp.tavily.com/mcp"
 
   # Health probes
   probes:
@@ -422,14 +448,35 @@ langfuse:
 # Database migration
 # ---------------------------------------------------------------------------
 migration:
-  # Mode: auto | manual | hook
-  #   auto: initContainer runs alembic upgrade head before backend starts
-  #   manual: no migration; operator runs manually
-  #   hook: Helm pre-upgrade hook Job (blocks upgrade until migration completes)
+  # Mode: auto | hook | manual
+  #   auto: initContainer runs migrations before backend starts
+  #   hook: Helm pre-install/pre-upgrade Job (blocks deploy until migration completes)
+  #   manual: no migration resources rendered; operator runs migrations externally
   mode: auto
 
-  # Job TTL (seconds after completion) for hook mode
+  # Job TTL (seconds after completion) for hook mode.
+  # Set to null to omit (for clusters without TTL controller).
   jobTtlSeconds: 600
+
+  # Migration command. Override when using advisory-lock wrapper module:
+  #   command: ["python", "-m", "agentic_runtime.db.migration_runner"]
+  command:
+    - alembic
+    - upgrade
+    - head
+
+  # Working directory for migration container.
+  # Must contain alembic.ini and alembic/ directory.
+  workingDir: /app
+
+  # Resource overrides for migration containers.
+  # Defaults to backend.resources if empty.
+  resources: {}
+
+  # Security context overrides for migration containers.
+  # Defaults to backend security context if empty.
+  # WARNING: Setting this replaces all defaults; provide the full context explicitly.
+  containerSecurityContext: {}
 
 # ---------------------------------------------------------------------------
 # Ingress
