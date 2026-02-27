@@ -1,1 +1,216 @@
-# Placeholder -- NetworkPolicy templates populated in Phase 4
+{{- if .Values.networkPolicy.enabled -}}
+{{- $fullname := include "biznez.fullname" . -}}
+{{- /*
+  ===== Backend NetworkPolicy =====
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "frontend") | nindent 14 }}
+    {{- if .Values.gateway.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "gateway") | nindent 14 }}
+    {{- end }}
+    {{- if and .Values.ingress.enabled (or (not (empty .Values.networkPolicy.ingress.namespaceSelector)) .Values.networkPolicy.ingress.allowFromAnyNamespace) }}
+    - from:
+        {{- if not (empty .Values.networkPolicy.ingress.namespaceSelector) }}
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingress.namespaceSelector | nindent 12 }}
+        {{- else }}
+        - namespaceSelector: {}
+        {{- end }}
+    {{- end }}
+  egress:
+    {{- include "biznez.networkPolicy.dnsEgress" . | nindent 4 }}
+    {{- if .Values.postgres.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 14 }}
+      ports:
+        - port: 5432
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.gateway.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "gateway") | nindent 14 }}
+      ports:
+        - port: {{ .Values.gateway.service.port | default 8080 }}
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.networkPolicy.egress.allowAllHttps }}
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- if and .Values.networkPolicy.egress.proxy.cidrs (gt (len .Values.networkPolicy.egress.proxy.ports) 0) }}
+    - to:
+        {{- range .Values.networkPolicy.egress.proxy.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.egress.proxy.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- if and .Values.networkPolicy.egress.externalServices.cidrs (gt (len .Values.networkPolicy.egress.externalServices.ports) 0) }}
+    - to:
+        {{- range .Values.networkPolicy.egress.externalServices.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.egress.externalServices.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-frontend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "frontend") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "frontend") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if or (not (empty .Values.networkPolicy.ingress.namespaceSelector)) .Values.networkPolicy.ingress.allowFromAnyNamespace }}
+    - from:
+        {{- if not (empty .Values.networkPolicy.ingress.namespaceSelector) }}
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingress.namespaceSelector | nindent 12 }}
+        {{- else }}
+        - namespaceSelector: {}
+        {{- end }}
+    {{- end }}
+  egress:
+    {{- include "biznez.networkPolicy.dnsEgress" . | nindent 4 }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 14 }}
+      ports:
+        - port: {{ .Values.backend.service.port | default 8000 }}
+          protocol: TCP
+{{- if .Values.postgres.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 14 }}
+      ports:
+        - port: 5432
+          protocol: TCP
+  egress: []
+{{- end }}
+{{- if .Values.gateway.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "biznez.componentLabels" (dict "root" . "component" "gateway") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "gateway") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "biznez.componentSelectorLabels" (dict "root" . "component" "backend") | nindent 14 }}
+  egress:
+    {{- include "biznez.networkPolicy.dnsEgress" . | nindent 4 }}
+    {{- if .Values.networkPolicy.egress.allowAllHttps }}
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+    {{- end }}
+    {{- if and .Values.networkPolicy.egress.proxy.cidrs (gt (len .Values.networkPolicy.egress.proxy.ports) 0) }}
+    - to:
+        {{- range .Values.networkPolicy.egress.proxy.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.egress.proxy.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- if and .Values.networkPolicy.egress.externalServices.cidrs (gt (len .Values.networkPolicy.egress.externalServices.ports) 0) }}
+    - to:
+        {{- range .Values.networkPolicy.egress.externalServices.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.egress.externalServices.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- if and .Values.networkPolicy.egress.mcpTargets.namespaceSelectors (gt (len .Values.networkPolicy.egress.mcpTargets.ports) 0) }}
+    {{- range .Values.networkPolicy.egress.mcpTargets.namespaceSelectors }}
+    - to:
+        - namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+      ports:
+        {{- range $.Values.networkPolicy.egress.mcpTargets.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

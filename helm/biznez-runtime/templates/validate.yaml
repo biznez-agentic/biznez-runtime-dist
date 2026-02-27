@@ -6,3 +6,50 @@ Outputs nothing -- fail-fast only. All delimiters use whitespace trimming.
 {{- if not (has .Values.migration.mode $validModes) -}}
 {{- fail (printf "migration.mode must be one of: auto, hook, manual. Got: %s" .Values.migration.mode) -}}
 {{- end -}}
+{{- /* --- Phase 4: Networking validation guards --- */ -}}
+{{- /* Mutual exclusion: Ingress + Gateway API */ -}}
+{{- if and .Values.ingress.enabled .Values.gatewayApi.enabled -}}
+{{- fail "ingress.enabled and gatewayApi.enabled cannot both be true. Enable one, not both." -}}
+{{- end -}}
+{{- /* Ingress guards */ -}}
+{{- if .Values.ingress.enabled -}}
+  {{- $validIngressModes := list "multiHost" "splitByHost" -}}
+  {{- if not (has .Values.ingress.mode $validIngressModes) -}}
+  {{- fail (printf "ingress.mode must be one of: multiHost, splitByHost. Got: %s" .Values.ingress.mode) -}}
+  {{- end -}}
+  {{- if not .Values.ingress.hosts -}}
+  {{- fail "ingress.hosts must contain at least one host when ingress is enabled" -}}
+  {{- end -}}
+  {{- if .Values.ingress.tls.enabled -}}
+    {{- $validTlsModes := list "existingSecret" "certManager" -}}
+    {{- if not (has .Values.ingress.tls.mode $validTlsModes) -}}
+    {{- fail (printf "ingress.tls.mode must be one of: existingSecret, certManager. Got: %s" .Values.ingress.tls.mode) -}}
+    {{- end -}}
+    {{- if and (eq .Values.ingress.tls.mode "existingSecret") (not .Values.ingress.tls.secretName) -}}
+    {{- fail "ingress.tls.secretName is required when ingress.tls.mode is 'existingSecret'" -}}
+    {{- end -}}
+    {{- if and (eq .Values.ingress.tls.mode "certManager") (not .Values.ingress.tls.clusterIssuer) -}}
+    {{- fail "ingress.tls.clusterIssuer is required when ingress.tls.mode is 'certManager'" -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- /* Frontend ingress namespace guard */ -}}
+{{- if and .Values.networkPolicy.enabled .Values.ingress.enabled -}}
+  {{- if and (empty .Values.networkPolicy.ingress.namespaceSelector) (not .Values.networkPolicy.ingress.allowFromAnyNamespace) -}}
+  {{- fail "networkPolicy.ingress.namespaceSelector is required when both ingress and networkPolicy are enabled. Set it to match your ingress controller's namespace (e.g., {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}). Alternatively, set networkPolicy.ingress.allowFromAnyNamespace=true to allow from any namespace (less secure)." -}}
+  {{- end -}}
+{{- end -}}
+{{- /* Gateway API guards */ -}}
+{{- if .Values.gatewayApi.enabled -}}
+  {{- if not .Values.gatewayApi.gatewayRef.name -}}
+  {{- fail "gatewayApi.gatewayRef.name is required when gatewayApi is enabled" -}}
+  {{- end -}}
+  {{- range .Values.gatewayApi.httpRoutes -}}
+    {{- if not .service -}}
+    {{- fail "gatewayApi.httpRoutes[].service is required" -}}
+    {{- end -}}
+    {{- if not .hostname -}}
+    {{- fail "gatewayApi.httpRoutes[].hostname is required" -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}

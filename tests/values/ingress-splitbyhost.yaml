@@ -1,0 +1,25 @@
+# Test values: Ingress splitByHost mode with per-host overrides + certManager TLS
+# Layer on top of eval.yaml: helm template -f eval.yaml -f ingress-splitbyhost.yaml
+
+ingress:
+  enabled: true
+  mode: splitByHost
+  className: nginx
+
+  hosts:
+    - host: api.biznez.example.com
+      className: nginx-internal
+      paths:
+        - path: /
+          service: backend
+          port: 8000
+    - host: app.biznez.example.com
+      paths:
+        - path: /
+          service: frontend
+          port: 80
+
+  tls:
+    enabled: true
+    mode: certManager
+    clusterIssuer: letsencrypt-prod

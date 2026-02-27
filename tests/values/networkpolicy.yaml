@@ -1,0 +1,35 @@
+# Test values: NetworkPolicy with allowAllHttps
+# Layer on top of eval.yaml: helm template -f eval.yaml -f networkpolicy.yaml
+
+# Explicitly enable components to ensure 4 policies
+gateway:
+  enabled: true
+
+postgres:
+  enabled: true
+
+# Enable ingress to trigger backend ingress namespace rule
+ingress:
+  enabled: true
+  hosts:
+    - host: api.biznez.example.com
+      paths:
+        - path: /
+          service: backend
+          port: 8000
+    - host: app.biznez.example.com
+      paths:
+        - path: /
+          service: frontend
+          port: 80
+
+networkPolicy:
+  enabled: true
+
+  ingress:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ingress-nginx
+
+  egress:
+    allowAllHttps: true

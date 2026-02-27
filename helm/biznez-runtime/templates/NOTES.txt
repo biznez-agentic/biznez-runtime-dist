@@ -49,6 +49,37 @@
     In-cluster URL: {{ include "biznez.gatewayUrl" . }}
 {{- end }}
 
+{{- if .Values.ingress.enabled }}
+
+  Ingress:
+
+    Mode: {{ .Values.ingress.mode }}
+    {{- range .Values.ingress.hosts }}
+    Host: {{ .host }}
+    {{- end }}
+    TLS: {{ ternary "enabled" "disabled" .Values.ingress.tls.enabled }}
+{{- end }}
+
+{{- if .Values.gatewayApi.enabled }}
+
+  Gateway API:
+
+    Gateway: {{ .Values.gatewayApi.gatewayRef.name }}
+    {{- range .Values.gatewayApi.httpRoutes }}
+    Route: {{ .hostname }} -> {{ .service }}
+    {{- end }}
+{{- end }}
+
+{{- if .Values.networkPolicy.enabled }}
+
+  Network Policies: enabled
+    {{- if .Values.networkPolicy.egress.allowAllHttps }}
+    Egress: allow all HTTPS (port 443)
+    {{- else }}
+    Egress: restricted (check networkPolicy.egress values)
+    {{- end }}
+{{- end }}
+
 {{- else }}
 {{- /* Production profile */}}
 
@@ -83,6 +114,40 @@
 {{- if eq .Values.migration.mode "manual" }}
     Run migrations manually before verifying the deployment:
       biznez-cli migrate --namespace {{ $ns }}
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+  Ingress:
+
+    Mode: {{ .Values.ingress.mode }}
+    {{- range .Values.ingress.hosts }}
+    Host: {{ .host }}
+    {{- end }}
+    TLS: {{ ternary "enabled" "disabled" .Values.ingress.tls.enabled }}
+{{- end }}
+
+{{- if .Values.gatewayApi.enabled }}
+
+  Gateway API:
+
+    Gateway: {{ .Values.gatewayApi.gatewayRef.name }}
+    {{- range .Values.gatewayApi.httpRoutes }}
+    Route: {{ .hostname }} -> {{ .service }}
+    {{- end }}
+{{- end }}
+
+{{- if .Values.networkPolicy.enabled }}
+
+  Network Policies: enabled
+    {{- if .Values.networkPolicy.egress.allowAllHttps }}
+    Egress: allow all HTTPS (port 443)
+    {{- else }}
+    Egress: restricted (check networkPolicy.egress values)
+    {{- end }}
+{{- else }}
+
+  WARNING: Network policies are disabled. Enable networkPolicy.enabled=true for production.
 {{- end }}
 
   Reminders:
