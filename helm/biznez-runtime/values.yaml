@@ -10,6 +10,10 @@ global:
   # When "production", Helm templates enforce required fields via {{ required }}/{{ fail }}.
   profile: eval
 
+  # Require digest-pinned images for all components.
+  # When true, fails if any image.digest is empty.
+  requireDigests: false
+
   # Prepended to all image references: {imageRegistry}/{component.image.repository}:{tag}
   imageRegistry: ""
 

@@ -53,3 +53,72 @@ Outputs nothing -- fail-fast only. All delimiters use whitespace trimming.
     {{- end -}}
   {{- end -}}
 {{- end -}}
+{{- /* --- Phase 5: Production profile guards --- */ -}}
+{{- $isProd := eq .Values.global.profile "production" -}}
+{{- if $isProd -}}
+  {{- /* Guard 1: backend.existingSecret required */ -}}
+  {{- if empty .Values.backend.existingSecret -}}
+  {{- fail "Production requires backend.existingSecret. Create a K8s Secret with ENCRYPTION_KEY and JWT_SECRET_KEY." -}}
+  {{- end -}}
+  {{- /* Guard 2a: inline encryptionKey forbidden */ -}}
+  {{- if not (empty .Values.backend.secrets.encryptionKey) -}}
+  {{- fail "Production forbids inline secrets. Remove backend.secrets.encryptionKey, use backend.existingSecret." -}}
+  {{- end -}}
+  {{- /* Guard 2b: inline jwtSecret forbidden */ -}}
+  {{- if not (empty .Values.backend.secrets.jwtSecret) -}}
+  {{- fail "Production forbids inline secrets. Remove backend.secrets.jwtSecret, use backend.existingSecret." -}}
+  {{- end -}}
+  {{- /* Guard 3: embedded postgres forbidden */ -}}
+  {{- if .Values.postgres.enabled -}}
+  {{- fail "Production requires an external managed database. Set postgres.enabled=false." -}}
+  {{- end -}}
+  {{- /* Guard 4: external host required */ -}}
+  {{- if empty .Values.postgres.external.host -}}
+  {{- fail "Production requires postgres.external.host for wait-for-db healthcheck." -}}
+  {{- end -}}
+  {{- /* Guard 5: external existingSecret required */ -}}
+  {{- if empty .Values.postgres.external.existingSecret -}}
+  {{- fail "Production requires postgres.external.existingSecret with DATABASE_URL key." -}}
+  {{- end -}}
+  {{- /* Guard 6: LLM existingSecret required when provider is active */ -}}
+  {{- if and (not (empty .Values.llm.provider)) (ne .Values.llm.provider "none") (empty .Values.llm.existingSecret) -}}
+  {{- fail (printf "Production requires llm.existingSecret when llm.provider is '%s'." .Values.llm.provider) -}}
+  {{- end -}}
+  {{- /* Guard 7: inline LLM apiKey forbidden */ -}}
+  {{- if and (not (empty .Values.llm.provider)) (ne .Values.llm.provider "none") (not (empty .Values.llm.secrets.apiKey)) -}}
+  {{- fail "Production forbids inline secrets. Remove llm.secrets.apiKey, use llm.existingSecret." -}}
+  {{- end -}}
+  {{- /* Guard 8: OIDC issuer required */ -}}
+  {{- if and (or (eq .Values.auth.mode "oidc") (eq .Values.auth.mode "dual")) (empty .Values.auth.oidc.issuer) -}}
+  {{- fail (printf "Production with auth.mode=%s requires auth.oidc.issuer." .Values.auth.mode) -}}
+  {{- end -}}
+  {{- /* Guard 9: OIDC audience required */ -}}
+  {{- if and (or (eq .Values.auth.mode "oidc") (eq .Values.auth.mode "dual")) (empty .Values.auth.oidc.audience) -}}
+  {{- fail (printf "Production with auth.mode=%s requires auth.oidc.audience." .Values.auth.mode) -}}
+  {{- end -}}
+  {{- /* Guard 10: inline gateway secrets forbidden */ -}}
+  {{- if and .Values.gateway.enabled .Values.gateway.secrets (empty .Values.gateway.existingSecret) -}}
+  {{- fail "Production forbids inline gateway.secrets. Use gateway.existingSecret." -}}
+  {{- end -}}
+{{- end -}}
+{{- /* --- Phase 5: PDB guards (any profile) --- */ -}}
+{{- if .Values.pdb.enabled -}}
+  {{- if .Values.autoscaling.enabled -}}
+    {{- /* Guard 11: PDB with HPA -- check minReplicas */ -}}
+    {{- if lt (int .Values.autoscaling.minReplicas) 2 -}}
+    {{- fail (printf "pdb.enabled=true with autoscaling requires autoscaling.minReplicas >= 2 (got %d)." (int .Values.autoscaling.minReplicas)) -}}
+    {{- end -}}
+  {{- else -}}
+    {{- /* Guard 11b: PDB without HPA -- check backend.replicas */ -}}
+    {{- if lt (int .Values.backend.replicas) 2 -}}
+    {{- fail (printf "pdb.enabled=true requires backend.replicas >= 2 (got %d). PDB with minAvailable=1 and 1 replica blocks all voluntary disruptions." (int .Values.backend.replicas)) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- /* --- Phase 5: HPA metrics guard (any profile) --- */ -}}
+{{- if .Values.autoscaling.enabled -}}
+  {{- /* Guard 12: at least one metric required */ -}}
+  {{- if and (not .Values.autoscaling.metrics.cpu.targetAverageUtilization) (not .Values.autoscaling.metrics.memory.targetAverageUtilization) -}}
+  {{- fail "autoscaling.enabled requires at least one metric. Set autoscaling.metrics.cpu.targetAverageUtilization or autoscaling.metrics.memory.targetAverageUtilization." -}}
+  {{- end -}}
+{{- end -}}
