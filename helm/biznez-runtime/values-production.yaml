@@ -1,4 +1,60 @@
-# Placeholder -- CIS-hardened production overrides populated in Phase 5
-# See docs/PACKAGING-PLAN.md section 8 for production hardening details
+# Biznez Agentic Runtime -- production overrides
+# Usage: helm install ... -f values.yaml -f values-production.yaml
+#
+# REQUIRED -- set via --set or additional values file:
+#   backend.existingSecret            K8s Secret with ENCRYPTION_KEY, JWT_SECRET_KEY
+#   postgres.external.existingSecret  K8s Secret with DATABASE_URL
+#   postgres.external.host            Managed database hostname
+#   auth.oidc.issuer                  OIDC provider issuer URL
+#   auth.oidc.audience                OAuth2 client ID
+#   (If llm.provider != none) llm.existingSecret
+#   (If gateway needs keys) gateway.existingSecret
+
 global:
   profile: production
+  requireDigests: true
+
+postgres:
+  enabled: false
+
+auth:
+  mode: oidc
+
+migration:
+  mode: manual
+
+backend:
+  secrets:
+    encryptionKey: ""
+    jwtSecret: ""
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  # Explicit for production clarity; operator sets postgres.external.host (guard #4)
+  waitForDb:
+    enabled: true
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    cpu:
+      targetAverageUtilization: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  egress:
+    allowAllHttps: false
+
+llm:
+  secrets:
+    apiKey: ""

@@ -86,6 +86,9 @@ Usage: {{ include "biznez.imageRef" (dict "root" . "image" .Values.backend.image
 {{- $repository := .image.repository -}}
 {{- $tag := .image.tag | default .root.Chart.AppVersion -}}
 {{- $digest := .image.digest -}}
+{{- if and .root.Values.global.requireDigests (empty $digest) -}}
+  {{- fail (printf "Digest-pinned images required when global.requireDigests=true. Set image.digest for '%s' or set global.requireDigests=false." $repository) -}}
+{{- end -}}
 {{- if $registry -}}
   {{- if $digest -}}
     {{- printf "%s/%s@%s" $registry $repository $digest -}}

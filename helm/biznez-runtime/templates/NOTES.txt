@@ -80,6 +80,16 @@
     {{- end }}
 {{- end }}
 
+{{- if .Values.autoscaling.enabled }}
+
+  Autoscaling:  HPA enabled ({{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas)
+{{- end }}
+
+{{- if .Values.pdb.enabled }}
+
+  Disruption Budget:  PDB enabled (minAvailable: {{ .Values.pdb.minAvailable }})
+{{- end }}
+
 {{- else }}
 {{- /* Production profile */}}
 
@@ -148,6 +158,16 @@
 {{- else }}
 
   WARNING: Network policies are disabled. Enable networkPolicy.enabled=true for production.
+{{- end }}
+
+{{- if .Values.autoscaling.enabled }}
+
+  Autoscaling:  HPA enabled ({{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas)
+{{- end }}
+
+{{- if .Values.pdb.enabled }}
+
+  Disruption Budget:  PDB enabled (minAvailable: {{ .Values.pdb.minAvailable }})
 {{- end }}
 
   Reminders:
