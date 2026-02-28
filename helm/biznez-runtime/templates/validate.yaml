@@ -104,9 +104,10 @@ Outputs nothing -- fail-fast only. All delimiters use whitespace trimming.
 {{- /* --- Phase 5: PDB guards (any profile) --- */ -}}
 {{- if .Values.pdb.enabled -}}
   {{- if .Values.autoscaling.enabled -}}
-    {{- /* Guard 11: PDB with HPA -- check minReplicas */ -}}
-    {{- if lt (int .Values.autoscaling.minReplicas) 2 -}}
-    {{- fail (printf "pdb.enabled=true with autoscaling requires autoscaling.minReplicas >= 2 (got %d)." (int .Values.autoscaling.minReplicas)) -}}
+    {{- /* Guard 11: PDB with HPA -- check minReplicas (default 2 matches hpa.yaml) */ -}}
+    {{- $minReplicas := .Values.autoscaling.minReplicas | default 2 -}}
+    {{- if lt (int $minReplicas) 2 -}}
+    {{- fail (printf "pdb.enabled=true with autoscaling requires autoscaling.minReplicas >= 2 (got %d)." (int $minReplicas)) -}}
     {{- end -}}
   {{- else -}}
     {{- /* Guard 11b: PDB without HPA -- check backend.replicas */ -}}
