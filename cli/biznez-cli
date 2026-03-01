@@ -32,7 +32,11 @@ readonly EXIT_SECRET=5
 readonly EXIT_HEALTH=6
 readonly EXIT_MIGRATE=7
 readonly EXIT_NETWORK=8
+# shellcheck disable=SC2034
+readonly EXIT_RELEASE=9
 readonly EXIT_ABORT=10
+# shellcheck disable=SC2034
+readonly EXIT_USAGE=11
 
 # Default backend image for Fernet key generation
 readonly DEFAULT_BACKEND_IMAGE="biznez/platform-api:latest"
@@ -54,6 +58,15 @@ _CLEANUP_FILES=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CHART_DIR="${BIZNEZ_CHART_DIR:-$REPO_ROOT/helm/biznez-runtime}"
+
+# Source image/release functions if lib exists (development mode)
+_LIB_DIR="$(cd "$(dirname "$0")/lib" 2>/dev/null && pwd)" || true
+if [ -n "$_LIB_DIR" ] && [ -f "$_LIB_DIR/images.sh" ]; then
+    # shellcheck source=lib/images.sh
+    . "$_LIB_DIR/images.sh"
+fi
+
+# === PHASE8_LIB_INSERTION_POINT ===
 
 # ---------------------------------------------------------------------------
 # Section 3: Utility Functions
@@ -168,7 +181,11 @@ _register_cleanup() { _CLEANUP_FILES="$_CLEANUP_FILES $1"; }
 _cleanup() {
     local f
     for f in $_CLEANUP_FILES; do
-        rm -f "$f" 2>/dev/null || true
+        if [ -d "$f" ]; then
+            rm -rf "$f" 2>/dev/null || true
+        else
+            rm -f "$f" 2>/dev/null || true
+        fi
     done
 }
 trap _cleanup EXIT INT TERM
@@ -1675,6 +1692,12 @@ Commands (P2 -- data management):
   restore-db          pg_restore into embedded PostgreSQL
   upgrade             Orchestrated upgrade with pre-checks and rollback
 
+Commands (P3 -- supply chain):
+  export-images       Export container images to portable archive
+  import-images       Import images from archive into registry or Docker
+  verify-images       Verify image signatures and tag integrity
+  build-release       Build complete release with digests, scan, SBOM, signing
+
 Global flags:
   -n, --namespace <ns>        Target K8s namespace
   -r, --release <name>        Helm release name (default: biznez)
@@ -1725,6 +1748,10 @@ main() {
         backup-db)         cmd_backup_db "$@" ;;
         restore-db)        cmd_restore_db "$@" ;;
         upgrade)           cmd_upgrade "$@" ;;
+        export-images)     cmd_export_images "$@" ;;
+        import-images)     cmd_import_images "$@" ;;
+        verify-images)     cmd_verify_images "$@" ;;
+        build-release)     cmd_build_release "$@" ;;
         help)              _usage_main ;;
         *)                 die "Unknown command: $cmd. Run 'biznez-cli help' for usage." ;;
     esac
