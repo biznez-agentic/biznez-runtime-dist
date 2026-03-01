@@ -1,4 +1,1711 @@
 #!/usr/bin/env bash
-# Placeholder -- installer CLI populated in Phase 7
-echo "Not yet implemented. See docs/PHASES.md Phase 7."
-exit 1
+# =============================================================================
+# biznez-cli -- Biznez Agentic Runtime operator CLI
+# =============================================================================
+# Single-file CLI for deploying and managing the Biznez Agentic Runtime
+# platform on Kubernetes. Wraps helm, kubectl, and related tools with
+# profile-aware validation, secret generation, health checking, and
+# migration orchestration.
+#
+# Usage:
+#   biznez-cli <command> [flags]
+#   biznez-cli --help
+#
+# SECURITY: Do not run with bash -x (xtrace). Secret generation guards
+# against xtrace, but operator should avoid enabling it globally.
+# =============================================================================
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Section 1: Constants & Version
+# ---------------------------------------------------------------------------
+readonly CLI_VERSION="0.1.0"
+
+# Exit codes
+# shellcheck disable=SC2034
+readonly EXIT_OK=0
+readonly EXIT_ERROR=1
+readonly EXIT_PREREQ=2
+readonly EXIT_VALIDATE=3
+readonly EXIT_KUBE=4
+readonly EXIT_SECRET=5
+readonly EXIT_HEALTH=6
+readonly EXIT_MIGRATE=7
+readonly EXIT_NETWORK=8
+readonly EXIT_ABORT=10
+
+# Default backend image for Fernet key generation
+readonly DEFAULT_BACKEND_IMAGE="biznez/platform-api:latest"
+
+# ---------------------------------------------------------------------------
+# Section 2: Global State
+# ---------------------------------------------------------------------------
+NO_COLOR="${NO_COLOR:-false}"
+VERBOSE=false
+NAMESPACE=""
+RELEASE="biznez"
+VALUES_FILES=()
+PROFILE=""
+PROFILE_EXPLICIT=false
+HELM_PASSTHROUGH=()
+_CLEANUP_FILES=""
+
+# Script location
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CHART_DIR="${BIZNEZ_CHART_DIR:-$REPO_ROOT/helm/biznez-runtime}"
+
+# ---------------------------------------------------------------------------
+# Section 3: Utility Functions
+# ---------------------------------------------------------------------------
+
+# ---- Output ---------------------------------------------------------------
+_color_enabled() { [ "$NO_COLOR" = "false" ] && [ -t 1 ]; }
+
+info() {
+    if _color_enabled; then
+        printf '\033[0;34m[INFO]\033[0m  %s\n' "$*"
+    else
+        printf '[INFO]  %s\n' "$*"
+    fi
+}
+
+ok() {
+    if _color_enabled; then
+        printf '\033[0;32m[OK]\033[0m    %s\n' "$*"
+    else
+        printf '[OK]    %s\n' "$*"
+    fi
+}
+
+warn() {
+    if _color_enabled; then
+        printf '\033[0;33m[WARN]\033[0m  %s\n' "$*" >&2
+    else
+        printf '[WARN]  %s\n' "$*" >&2
+    fi
+}
+
+error() {
+    if _color_enabled; then
+        printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2
+    else
+        printf '[ERROR] %s\n' "$*" >&2
+    fi
+}
+
+die() {
+    error "$1"
+    exit "${2:-$EXIT_ERROR}"
+}
+
+debug() {
+    if [ "$VERBOSE" = "true" ]; then
+        printf '[DEBUG] %s\n' "$*"
+    fi
+}
+
+# ---- Prerequisites --------------------------------------------------------
+_require_cmd() {
+    local cmd="$1"
+    local hint="${2:-}"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        if [ -n "$hint" ]; then
+            die "$cmd is required but not found. $hint" "$EXIT_PREREQ"
+        else
+            die "$cmd is required but not found." "$EXIT_PREREQ"
+        fi
+    fi
+}
+
+# ---- Version comparison ---------------------------------------------------
+_version_gte() {
+    # Returns 0 if $1 >= $2 (major.minor comparison)
+    # Strips leading 'v' and non-numeric suffixes
+    local raw1="$1" raw2="$2"
+    local v1 v2 v1_major v1_minor v2_major v2_minor
+
+    v1=$(echo "$raw1" | sed 's/^v//' | sed 's/[^0-9.].*$//')
+    v2=$(echo "$raw2" | sed 's/^v//' | sed 's/[^0-9.].*$//')
+
+    v1_major=$(echo "$v1" | cut -d. -f1)
+    v1_minor=$(echo "$v1" | cut -d. -f2)
+    v2_major=$(echo "$v2" | cut -d. -f1)
+    v2_minor=$(echo "$v2" | cut -d. -f2)
+
+    # Treat empty as 0
+    v1_major="${v1_major:-0}"
+    v1_minor="${v1_minor:-0}"
+    v2_major="${v2_major:-0}"
+    v2_minor="${v2_minor:-0}"
+
+    # Validate numeric
+    if ! echo "$v1_major" | grep -qE '^[0-9]+$' 2>/dev/null; then
+        warn "Could not parse version '$raw1' — skipping version check"
+        return 0
+    fi
+    if ! echo "$v2_major" | grep -qE '^[0-9]+$' 2>/dev/null; then
+        return 0
+    fi
+
+    if [ "$v1_major" -gt "$v2_major" ]; then return 0; fi
+    if [ "$v1_major" -eq "$v2_major" ] && [ "$v1_minor" -ge "$v2_minor" ]; then return 0; fi
+    return 1
+}
+
+_check_version() {
+    local cmd="$1" min_version="$2" actual_version="$3"
+    if ! _version_gte "$actual_version" "$min_version"; then
+        warn "$cmd version $actual_version is below recommended minimum $min_version"
+    else
+        debug "$cmd version $actual_version >= $min_version"
+    fi
+}
+
+# ---- Cleanup --------------------------------------------------------------
+_register_cleanup() { _CLEANUP_FILES="$_CLEANUP_FILES $1"; }
+
+_cleanup() {
+    local f
+    for f in $_CLEANUP_FILES; do
+        rm -f "$f" 2>/dev/null || true
+    done
+}
+trap _cleanup EXIT INT TERM
+
+# ---- Kubernetes helpers ---------------------------------------------------
+_find_resource() {
+    local kind="$1" component="$2"
+    kubectl get "$kind" \
+        -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=$component" \
+        -n "$NAMESPACE" -o name 2>/dev/null | head -1
+}
+
+_collect_optional() {
+    local label="$1" outfile="$2"
+    shift 2
+    if "$@" > "$outfile" 2>&1; then
+        ok "Collected: $label"
+    else
+        warn "Skipped: $label ($(head -1 "$outfile" 2>/dev/null || echo 'no output'))"
+        echo "# SKIPPED: $label" > "$outfile"
+    fi
+}
+
+_check_secret_key() {
+    local secret="$1" key="$2"
+    local _val
+    _val=$(kubectl get secret "$secret" -n "$NAMESPACE" \
+        -o "jsonpath={.data['$key']}" 2>/dev/null) || true
+    if [ -z "$_val" ]; then
+        return 1
+    fi
+    return 0
+}
+
+_resolve_namespace() {
+    if [ -z "$NAMESPACE" ]; then
+        NAMESPACE="${BIZNEZ_NAMESPACE:-}"
+    fi
+    if [ -z "$NAMESPACE" ]; then
+        NAMESPACE=$(kubectl config view --minify -o jsonpath='{..namespace}' 2>/dev/null) || true
+        NAMESPACE="${NAMESPACE:-default}"
+    fi
+}
+
+# ---- Endpoint check -------------------------------------------------------
+_check_endpoint() {
+    local url="$1" timeout="${2:-10}"
+    local rc=0
+    curl -sf --max-time "$timeout" "$url" >/dev/null 2>&1 || rc=$?
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Section 4: Command Functions
+# ---------------------------------------------------------------------------
+
+# ===== generate-secrets ====================================================
+_usage_generate_secrets() {
+    cat <<'USAGE'
+Usage: biznez-cli generate-secrets [flags]
+
+Generate cryptographic secrets for Biznez Runtime deployments.
+
+Flags:
+  --format <yaml|env|raw>    Output format (default: yaml)
+  --output <file>            Write output to file instead of stdout
+  --backend-image <image>    Backend image for Fernet generation (default: biznez/platform-api:latest)
+  --no-docker-fernet         Skip Docker-based Fernet generation; use openssl/python fallback
+  -n, --namespace <ns>       Namespace for K8s Secret metadata (default: current context)
+  -h, --help                 Show this help
+USAGE
+}
+
+cmd_generate_secrets() {
+    local format="yaml" output="" backend_image="$DEFAULT_BACKEND_IMAGE" no_docker=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --format)     format="$2"; shift 2 ;;
+            --output)     output="$2"; shift 2 ;;
+            --backend-image) backend_image="$2"; shift 2 ;;
+            --no-docker-fernet) no_docker=true; shift ;;
+            -h|--help)    _usage_generate_secrets; return 0 ;;
+            *)            die "Unknown flag for generate-secrets: $1" ;;
+        esac
+    done
+
+    case "$format" in
+        yaml|env|raw) ;;
+        *) die "Invalid format '$format'. Must be yaml, env, or raw." ;;
+    esac
+
+    _resolve_namespace
+
+    # Guard against xtrace leaking secrets
+    { set +x; } 2>/dev/null
+
+    # ---- ENCRYPTION_KEY (Fernet) ----
+    local _enc_key=""
+
+    if [ "$no_docker" = "false" ]; then
+        _require_cmd docker "Docker required for container-based Fernet key generation. Use --no-docker-fernet to fall back to openssl/python."
+
+        # Air-gapped image check
+        if ! docker image inspect "$backend_image" >/dev/null 2>&1; then
+            warn "Image $backend_image not found locally. Docker will attempt to pull it."
+            warn "In air-gapped environments, load the image first: docker load -i <archive>.tar"
+        fi
+
+        _enc_key=$(docker run --rm "$backend_image" \
+            python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+            2>/dev/null) || true
+
+        if [ -z "$_enc_key" ]; then
+            warn "Docker-based Fernet key generation failed. Falling back to local methods."
+        fi
+    fi
+
+    # Fallback 1: python3 urlsafe_b64encode (closer to Fernet format)
+    if [ -z "$_enc_key" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            _enc_key=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" 2>/dev/null) || true
+            if [ -n "$_enc_key" ]; then
+                warn "Generated key is URL-safe base64 but not a true Fernet key."
+                warn "May fail validation if app strictly requires cryptography.fernet.Fernet format."
+            fi
+        fi
+    fi
+
+    # Fallback 2: openssl (least correct)
+    if [ -z "$_enc_key" ]; then
+        _require_cmd openssl "Neither docker, python3, nor openssl available for key generation."
+        _enc_key=$(openssl rand -base64 32 2>/dev/null) || \
+            die "Failed to generate ENCRYPTION_KEY." "$EXIT_SECRET"
+        warn "Generated key is standard base64, NOT URL-safe."
+        warn "May fail validation if app requires Fernet format. Consider using --backend-image."
+    fi
+
+    # ---- JWT_SECRET_KEY ----
+    local _jwt_key=""
+    if command -v openssl >/dev/null 2>&1; then
+        _jwt_key=$(openssl rand -base64 32 2>/dev/null) || true
+    fi
+    if [ -z "$_jwt_key" ] && command -v python3 >/dev/null 2>&1; then
+        _jwt_key=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))" 2>/dev/null) || true
+    fi
+    if [ -z "$_jwt_key" ]; then
+        die "Cannot generate JWT_SECRET_KEY. Install openssl or python3." "$EXIT_PREREQ"
+    fi
+
+    # ---- POSTGRES_PASSWORD ----
+    local _pg_pass=""
+    if command -v openssl >/dev/null 2>&1; then
+        _pg_pass=$(openssl rand -hex 24 2>/dev/null) || true
+    fi
+    if [ -z "$_pg_pass" ] && command -v python3 >/dev/null 2>&1; then
+        _pg_pass=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))" 2>/dev/null) || true
+    fi
+    if [ -z "$_pg_pass" ]; then
+        die "Cannot generate POSTGRES_PASSWORD. Install openssl or python3." "$EXIT_PREREQ"
+    fi
+
+    # ---- Format output ----
+    local _output=""
+    case "$format" in
+        yaml)
+            _output=$(cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${RELEASE}-backend-secrets
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  ENCRYPTION_KEY: "${_enc_key}"
+  JWT_SECRET_KEY: "${_jwt_key}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${RELEASE}-postgres-secrets
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  POSTGRES_USER: "biznez"
+  POSTGRES_PASSWORD: "${_pg_pass}"
+EOF
+)
+            ;;
+        env)
+            _output=$(cat <<EOF
+ENCRYPTION_KEY=${_enc_key}
+JWT_SECRET_KEY=${_jwt_key}
+POSTGRES_PASSWORD=${_pg_pass}
+EOF
+)
+            ;;
+        raw)
+            _output=$(printf '%s\n%s\n%s\n' "$_enc_key" "$_jwt_key" "$_pg_pass")
+            ;;
+    esac
+
+    # Clear secret variables
+    _enc_key="" ; _jwt_key="" ; _pg_pass=""
+
+    if [ -n "$output" ]; then
+        echo "$_output" > "$output"
+        ok "Secrets written to $output"
+    else
+        echo "$_output"
+    fi
+}
+
+# ===== validate =============================================================
+_usage_validate() {
+    cat <<'USAGE'
+Usage: biznez-cli validate [flags]
+
+Pre-flight validation of values file and cluster state before install.
+
+Flags:
+  -f, --values <file>         Values file (required, can be specified multiple times)
+  --existing-secret <name>    Check that this K8s Secret exists
+  --strict                    Fail on helm lint warnings
+  -n, --namespace <ns>        Target namespace (default: current context)
+  -r, --release <name>        Release name (default: biznez)
+  --profile <eval|production> Override profile detection
+  -h, --help                  Show this help
+USAGE
+}
+
+cmd_validate() {
+    local strict=false existing_secret=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|--values)       VALUES_FILES+=("$2"); shift 2 ;;
+            --existing-secret) existing_secret="$2"; shift 2 ;;
+            --strict)          strict=true; shift ;;
+            -h|--help)         _usage_validate; return 0 ;;
+            *)                 die "Unknown flag for validate: $1" ;;
+        esac
+    done
+
+    if [ ${#VALUES_FILES[@]} -eq 0 ]; then
+        die "At least one values file is required: biznez-cli validate -f values.yaml" "$EXIT_VALIDATE"
+    fi
+
+    _resolve_namespace
+
+    local _errors=0
+
+    # 1. Prerequisites
+    info "Checking prerequisites..."
+    _require_cmd kubectl "Install kubectl: https://kubernetes.io/docs/tasks/tools/"
+    _require_cmd helm "Install Helm: https://helm.sh/docs/intro/install/"
+
+    local _kubectl_version _helm_version
+    _kubectl_version=$(kubectl version --client -o json 2>/dev/null | grep '"gitVersion"' | head -1 | sed 's/.*"gitVersion"[^"]*"\([^"]*\)".*/\1/' 2>/dev/null) || true
+    _helm_version=$(helm version --short 2>/dev/null) || true
+    if [ -n "$_kubectl_version" ]; then _check_version kubectl 1.27 "$_kubectl_version"; fi
+    if [ -n "$_helm_version" ]; then _check_version helm 3.12 "$_helm_version"; fi
+    ok "Prerequisites satisfied"
+
+    # 2. Namespace
+    info "Checking namespace '$NAMESPACE'..."
+    if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+        ok "Namespace '$NAMESPACE' exists"
+    else
+        error "Namespace '$NAMESPACE' does not exist."
+        error "Create it: kubectl create namespace $NAMESPACE"
+        _errors=$((_errors + 1))
+    fi
+
+    # 3. Values files exist
+    local _vf
+    for _vf in "${VALUES_FILES[@]}"; do
+        if [ ! -f "$_vf" ]; then
+            error "Values file not found: $_vf"
+            _errors=$((_errors + 1))
+        elif [ ! -r "$_vf" ]; then
+            error "Values file not readable: $_vf"
+            _errors=$((_errors + 1))
+        fi
+    done
+
+    if [ "$_errors" -gt 0 ]; then
+        die "$_errors pre-check(s) failed." "$EXIT_VALIDATE"
+    fi
+
+    # 4. Chart directory
+    if [ ! -d "$CHART_DIR" ]; then
+        die "Chart directory not found: $CHART_DIR" "$EXIT_VALIDATE"
+    fi
+
+    # Build values flags
+    local _values_flags=()
+    for _vf in "${VALUES_FILES[@]}"; do
+        _values_flags+=("-f" "$_vf")
+    done
+
+    # 5. Helm template dry-run
+    info "Running Helm template validation..."
+    local _tmpl_out _tmpl_rc=0
+    _tmpl_out=$(helm template "$RELEASE" "$CHART_DIR" "${_values_flags[@]}" \
+        --namespace "$NAMESPACE" 2>&1) || _tmpl_rc=$?
+    if [ "$_tmpl_rc" -ne 0 ]; then
+        error "Helm template validation failed:"
+        echo "$_tmpl_out" >&2
+        die "Fix the values file errors above and re-run validate." "$EXIT_VALIDATE"
+    fi
+    ok "Helm template renders successfully"
+
+    # 6. Helm lint
+    info "Running Helm lint..."
+    local _lint_out _lint_rc=0
+    _lint_out=$(helm lint "$CHART_DIR" "${_values_flags[@]}" 2>&1) || _lint_rc=$?
+    if [ "$_lint_rc" -ne 0 ]; then
+        if [ "$strict" = "true" ]; then
+            error "Helm lint failed (--strict mode):"
+            echo "$_lint_out" >&2
+            die "Fix lint issues above." "$EXIT_VALIDATE"
+        else
+            warn "Helm lint reported warnings (non-fatal):"
+            echo "$_lint_out" >&2
+        fi
+    else
+        ok "Helm lint passed"
+    fi
+
+    # 7. K8s Secret existence (flag-driven)
+    if [ -n "$existing_secret" ]; then
+        info "Checking K8s Secret '$existing_secret'..."
+        if kubectl get secret "$existing_secret" -n "$NAMESPACE" >/dev/null 2>&1; then
+            ok "Secret '$existing_secret' exists"
+        else
+            error "Secret '$existing_secret' not found in namespace '$NAMESPACE'"
+            _errors=$((_errors + 1))
+        fi
+    fi
+
+    # 8. Production overlay warning
+    if [ "$PROFILE_EXPLICIT" = "true" ] && [ "$PROFILE" = "production" ]; then
+        if [ ${#VALUES_FILES[@]} -eq 1 ]; then
+            warn "Profile is 'production' but only one values file provided."
+            warn "Consider: -f values.yaml -f values-production.yaml"
+        fi
+    fi
+
+    if [ "$_errors" -gt 0 ]; then
+        die "$_errors validation check(s) failed." "$EXIT_VALIDATE"
+    fi
+
+    ok "All validation checks passed"
+}
+
+# ===== validate-secrets =====================================================
+_usage_validate_secrets() {
+    cat <<'USAGE'
+Usage: biznez-cli validate-secrets [flags]
+
+Verify K8s Secrets exist and contain required keys for a deployed release.
+
+Flags:
+  -r, --release <name>        Release name (required)
+  --backend-secret <name>     Override backend secret name
+  --db-secret <name>          Override database secret name
+  --llm-secret <name>         Override LLM provider secret name
+  --langfuse-secret <name>    Override Langfuse secret name
+  --gateway-secret <name>     Override gateway secret name
+  -n, --namespace <ns>        Target namespace
+  -h, --help                  Show this help
+USAGE
+}
+
+cmd_validate_secrets() {
+    local backend_secret="" db_secret="" llm_secret="" langfuse_secret="" gateway_secret=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --backend-secret)  backend_secret="$2"; shift 2 ;;
+            --db-secret)       db_secret="$2"; shift 2 ;;
+            --llm-secret)      llm_secret="$2"; shift 2 ;;
+            --langfuse-secret) langfuse_secret="$2"; shift 2 ;;
+            --gateway-secret)  gateway_secret="$2"; shift 2 ;;
+            -h|--help)         _usage_validate_secrets; return 0 ;;
+            *)                 die "Unknown flag for validate-secrets: $1" ;;
+        esac
+    done
+
+    _resolve_namespace
+    _require_cmd kubectl
+
+    local _errors=0
+    local _deployed_values="" _values_rc=0
+
+    # Try to discover secret names from deployed release if not given via flags
+    if [ -z "$backend_secret" ] || [ -z "$db_secret" ]; then
+        info "Discovering secrets from release '$RELEASE'..."
+        _deployed_values=$(helm get values "$RELEASE" -n "$NAMESPACE" -o json 2>/dev/null) || _values_rc=$?
+        if [ "$_values_rc" -ne 0 ] || [ -z "$_deployed_values" ]; then
+            # Fallback to YAML output
+            _deployed_values=$(helm get values "$RELEASE" -n "$NAMESPACE" 2>/dev/null) || true
+        fi
+
+        if [ -z "$_deployed_values" ]; then
+            warn "Could not get deployed values. Use explicit flags: --backend-secret, --db-secret"
+        fi
+    fi
+
+    # ---- Resolve secret names ----
+    if [ -z "$backend_secret" ]; then
+        # Try to extract from deployed values
+        backend_secret=$(echo "$_deployed_values" | grep -E '"?existingSecret"?\s*:' | head -1 | sed 's/.*:\s*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ') || true
+        if [ -z "$backend_secret" ]; then
+            backend_secret="${RELEASE}-backend-secrets"
+            debug "Using default backend secret name: $backend_secret"
+        fi
+    fi
+
+    # ---- Check backend secret ----
+    info "Checking backend secret '$backend_secret'..."
+    if ! kubectl get secret "$backend_secret" -n "$NAMESPACE" >/dev/null 2>&1; then
+        error "Backend secret '$backend_secret' not found"
+        _errors=$((_errors + 1))
+    else
+        local _missing=""
+        if ! _check_secret_key "$backend_secret" "ENCRYPTION_KEY"; then
+            _missing="$_missing ENCRYPTION_KEY"
+        fi
+        if ! _check_secret_key "$backend_secret" "JWT_SECRET_KEY"; then
+            _missing="$_missing JWT_SECRET_KEY"
+        fi
+        if [ -n "$_missing" ]; then
+            error "Backend secret '$backend_secret' missing keys:$_missing"
+            _errors=$((_errors + 1))
+        else
+            ok "Backend secret '$backend_secret': ENCRYPTION_KEY, JWT_SECRET_KEY present"
+        fi
+    fi
+
+    # ---- Check DB secret (if resolvable) ----
+    if [ -n "$db_secret" ]; then
+        info "Checking DB secret '$db_secret'..."
+        if ! kubectl get secret "$db_secret" -n "$NAMESPACE" >/dev/null 2>&1; then
+            error "DB secret '$db_secret' not found"
+            _errors=$((_errors + 1))
+        else
+            # Check for DATABASE_URL or POSTGRES_USER/POSTGRES_PASSWORD
+            if _check_secret_key "$db_secret" "DATABASE_URL"; then
+                ok "DB secret '$db_secret': DATABASE_URL present"
+            elif _check_secret_key "$db_secret" "POSTGRES_USER" && _check_secret_key "$db_secret" "POSTGRES_PASSWORD"; then
+                ok "DB secret '$db_secret': POSTGRES_USER, POSTGRES_PASSWORD present"
+            else
+                error "DB secret '$db_secret' missing DATABASE_URL or POSTGRES_USER/POSTGRES_PASSWORD"
+                _errors=$((_errors + 1))
+            fi
+        fi
+    fi
+
+    # ---- Check LLM secret ----
+    if [ -n "$llm_secret" ]; then
+        info "Checking LLM secret '$llm_secret'..."
+        if ! kubectl get secret "$llm_secret" -n "$NAMESPACE" >/dev/null 2>&1; then
+            error "LLM secret '$llm_secret' not found"
+            _errors=$((_errors + 1))
+        else
+            if ! _check_secret_key "$llm_secret" "LLM_API_KEY"; then
+                error "LLM secret '$llm_secret' missing key: LLM_API_KEY"
+                _errors=$((_errors + 1))
+            else
+                ok "LLM secret '$llm_secret': LLM_API_KEY present"
+            fi
+        fi
+    fi
+
+    # ---- Check Langfuse secret ----
+    if [ -n "$langfuse_secret" ]; then
+        info "Checking Langfuse secret '$langfuse_secret'..."
+        if ! kubectl get secret "$langfuse_secret" -n "$NAMESPACE" >/dev/null 2>&1; then
+            error "Langfuse secret '$langfuse_secret' not found"
+            _errors=$((_errors + 1))
+        else
+            local _lf_missing=""
+            if ! _check_secret_key "$langfuse_secret" "LANGFUSE_PUBLIC_KEY"; then
+                _lf_missing="$_lf_missing LANGFUSE_PUBLIC_KEY"
+            fi
+            if ! _check_secret_key "$langfuse_secret" "LANGFUSE_SECRET_KEY"; then
+                _lf_missing="$_lf_missing LANGFUSE_SECRET_KEY"
+            fi
+            if [ -n "$_lf_missing" ]; then
+                error "Langfuse secret '$langfuse_secret' missing keys:$_lf_missing"
+                _errors=$((_errors + 1))
+            else
+                ok "Langfuse secret '$langfuse_secret': LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY present"
+            fi
+        fi
+    fi
+
+    # ---- Check gateway secret (existence only) ----
+    if [ -n "$gateway_secret" ]; then
+        info "Checking gateway secret '$gateway_secret'..."
+        if ! kubectl get secret "$gateway_secret" -n "$NAMESPACE" >/dev/null 2>&1; then
+            error "Gateway secret '$gateway_secret' not found"
+            _errors=$((_errors + 1))
+        else
+            ok "Gateway secret '$gateway_secret' exists"
+        fi
+    fi
+
+    # ---- Report ----
+    if [ "$_errors" -gt 0 ]; then
+        die "$_errors secret check(s) failed." "$EXIT_SECRET"
+    fi
+    ok "All secret checks passed"
+}
+
+# ===== install ==============================================================
+_usage_install() {
+    cat <<'USAGE'
+Usage: biznez-cli install [flags] [-- <helm-flags>]
+
+Install or upgrade the Biznez Runtime via Helm.
+
+Flags:
+  -f, --values <file>                Values file (can be specified multiple times)
+  -n, --namespace <ns>               Target namespace
+  -r, --release <name>               Release name (default: biznez)
+  --profile <eval|production>        Override profile
+  --skip-validation                  Skip pre-install validation
+  --skip-health-check                Skip post-install health check
+  --auto-generate-secrets            Generate and apply eval secrets before install
+  --use-default-production-overlay   Auto-append values-production.yaml from chart dir
+  --create-namespace                 Create namespace if it doesn't exist
+  -h, --help                         Show this help
+
+Everything after -- is passed directly to helm upgrade --install.
+
+Examples:
+  biznez-cli install -f values.yaml -n demo
+  biznez-cli install -f values.yaml -n prod --profile production -- --timeout 10m --atomic
+USAGE
+}
+
+cmd_install() {
+    local skip_validation=false skip_health=false auto_secrets=false
+    local use_prod_overlay=false create_ns=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|--values)                    VALUES_FILES+=("$2"); shift 2 ;;
+            --skip-validation)              skip_validation=true; shift ;;
+            --skip-health-check)            skip_health=true; shift ;;
+            --auto-generate-secrets)        auto_secrets=true; shift ;;
+            --use-default-production-overlay) use_prod_overlay=true; shift ;;
+            --create-namespace)             create_ns=true; shift ;;
+            -h|--help)                      _usage_install; return 0 ;;
+            *)                              die "Unknown flag for install: $1" ;;
+        esac
+    done
+
+    if [ ${#VALUES_FILES[@]} -eq 0 ]; then
+        die "At least one values file is required: biznez-cli install -f values.yaml" "$EXIT_VALIDATE"
+    fi
+
+    _resolve_namespace
+    _require_cmd helm
+    _require_cmd kubectl
+
+    # Pre-install validation
+    if [ "$skip_validation" = "false" ]; then
+        info "Running pre-install validation..."
+        cmd_validate
+    fi
+
+    # Auto-generate secrets for eval
+    if [ "$auto_secrets" = "true" ]; then
+        info "Generating and applying eval secrets..."
+        cmd_generate_secrets --format yaml --no-docker-fernet | kubectl apply -n "$NAMESPACE" -f -
+        ok "Eval secrets applied"
+    fi
+
+    # Build helm command
+    local _helm_args=("upgrade" "--install" "$RELEASE" "$CHART_DIR")
+    local _vf
+    for _vf in "${VALUES_FILES[@]}"; do
+        _helm_args+=("-f" "$_vf")
+    done
+
+    # Auto-append production overlay
+    if [ "$use_prod_overlay" = "true" ]; then
+        local _prod_overlay="$CHART_DIR/values-production.yaml"
+        if [ -f "$_prod_overlay" ]; then
+            _helm_args+=("-f" "$_prod_overlay")
+            info "Appending production overlay: $_prod_overlay"
+        else
+            warn "Production overlay not found: $_prod_overlay"
+        fi
+    fi
+
+    _helm_args+=("--namespace" "$NAMESPACE")
+
+    if [ "$create_ns" = "true" ]; then
+        _helm_args+=("--create-namespace")
+    fi
+
+    _helm_args+=("--wait" "--timeout" "300s")
+
+    # Append helm passthrough args
+    if [ ${#HELM_PASSTHROUGH[@]} -gt 0 ]; then
+        _helm_args+=("${HELM_PASSTHROUGH[@]}")
+    fi
+
+    info "Installing release '$RELEASE' in namespace '$NAMESPACE'..."
+    debug "helm ${_helm_args[*]}"
+
+    local _install_rc=0
+    helm "${_helm_args[@]}" || _install_rc=$?
+
+    if [ "$_install_rc" -ne 0 ]; then
+        error "Helm install/upgrade failed with exit code $_install_rc"
+        error "Check: helm status $RELEASE -n $NAMESPACE"
+        die "Install failed." "$EXIT_KUBE"
+    fi
+
+    ok "Release '$RELEASE' installed successfully"
+
+    # Post-install health check
+    if [ "$skip_health" = "false" ]; then
+        info "Running post-install health check..."
+        cmd_health_check --timeout 120
+    fi
+}
+
+# ===== health-check =========================================================
+_usage_health_check() {
+    cat <<'USAGE'
+Usage: biznez-cli health-check [flags]
+
+Verify deployment health of all Biznez Runtime components.
+
+Flags:
+  -r, --release <name>    Release name (default: biznez)
+  -n, --namespace <ns>    Target namespace
+  --timeout <seconds>     Timeout for readiness wait (default: 120)
+  -h, --help              Show this help
+USAGE
+}
+
+cmd_health_check() {
+    local timeout=120
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --timeout) timeout="$2"; shift 2 ;;
+            -h|--help) _usage_health_check; return 0 ;;
+            *)         die "Unknown flag for health-check: $1" ;;
+        esac
+    done
+
+    _resolve_namespace
+    _require_cmd kubectl
+    _require_cmd curl
+
+    local _errors=0
+
+    # 1. Discover resources by label
+    info "Discovering deployed resources..."
+    local _backend_deploy _frontend_deploy _gateway_deploy _backend_svc
+
+    _backend_deploy=$(_find_resource deployment backend)
+    _frontend_deploy=$(_find_resource deployment frontend)
+    _gateway_deploy=$(_find_resource deployment gateway)
+    _backend_svc=$(_find_resource service backend)
+
+    if [ -z "$_backend_deploy" ]; then
+        die "No backend deployment found for release '$RELEASE' in namespace '$NAMESPACE'" "$EXIT_HEALTH"
+    fi
+
+    debug "Backend deployment: $_backend_deploy"
+    debug "Frontend deployment: ${_frontend_deploy:-none}"
+    debug "Gateway deployment: ${_gateway_deploy:-none}"
+    debug "Backend service: ${_backend_svc:-none}"
+
+    # 2. K8s deployment readiness
+    info "Waiting for backend deployment readiness (timeout: ${timeout}s)..."
+    local _wait_rc=0
+    kubectl wait --for=condition=Available "$_backend_deploy" \
+        -n "$NAMESPACE" --timeout="${timeout}s" 2>/dev/null || _wait_rc=$?
+    if [ "$_wait_rc" -ne 0 ]; then
+        error "Backend deployment not ready within ${timeout}s"
+        _errors=$((_errors + 1))
+    else
+        ok "Backend deployment is ready"
+    fi
+
+    if [ -n "$_frontend_deploy" ]; then
+        info "Waiting for frontend deployment readiness..."
+        local _fe_rc=0
+        kubectl wait --for=condition=Available "$_frontend_deploy" \
+            -n "$NAMESPACE" --timeout="${timeout}s" 2>/dev/null || _fe_rc=$?
+        if [ "$_fe_rc" -ne 0 ]; then
+            error "Frontend deployment not ready within ${timeout}s"
+            _errors=$((_errors + 1))
+        else
+            ok "Frontend deployment is ready"
+        fi
+    fi
+
+    if [ -n "$_gateway_deploy" ]; then
+        info "Waiting for gateway deployment readiness..."
+        local _gw_rc=0
+        kubectl wait --for=condition=Available "$_gateway_deploy" \
+            -n "$NAMESPACE" --timeout="${timeout}s" 2>/dev/null || _gw_rc=$?
+        if [ "$_gw_rc" -ne 0 ]; then
+            error "Gateway deployment not ready within ${timeout}s"
+            _errors=$((_errors + 1))
+        else
+            ok "Gateway deployment is ready"
+        fi
+    fi
+
+    # 3. Pod status check
+    info "Checking pod status..."
+    local _pods
+    _pods=$(kubectl get pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
+        --no-headers 2>/dev/null) || true
+    if [ -n "$_pods" ]; then
+        echo "$_pods"
+    else
+        warn "No pods found for release '$RELEASE'"
+    fi
+
+    # 4. Backend health endpoint via port-forward
+    if [ -n "$_backend_svc" ] && [ "$_errors" -eq 0 ]; then
+        info "Checking backend health endpoint via port-forward..."
+        local _local_port _pf_pid _endpoint_ok=false
+        local _pf_log
+        _pf_log=$(mktemp)
+        _register_cleanup "$_pf_log"
+
+        for _local_port in 18000 18001 18002; do
+            kubectl port-forward "$_backend_svc" "${_local_port}:8000" \
+                -n "$NAMESPACE" >"$_pf_log" 2>&1 &
+            _pf_pid=$!
+
+            # Probe the forwarded endpoint
+            local _attempt=0
+            while [ "$_attempt" -lt 5 ]; do
+                sleep 1
+                if curl -sf --max-time 3 "http://localhost:${_local_port}/api/v1/health" >/dev/null 2>&1; then
+                    _endpoint_ok=true
+                    break 2
+                fi
+                _attempt=$((_attempt + 1))
+            done
+
+            # Port didn't work -- kill and try next
+            kill "$_pf_pid" 2>/dev/null || true
+            wait "$_pf_pid" 2>/dev/null || true
+        done
+
+        if [ "$_endpoint_ok" = "true" ]; then
+            ok "Backend health endpoint responding on port $_local_port"
+            # Cleanup port-forward
+            kill "$_pf_pid" 2>/dev/null || true
+            wait "$_pf_pid" 2>/dev/null || true
+        else
+            warn "Could not reach backend health endpoint via port-forward"
+            warn "Trying kubectl exec fallback..."
+            local _exec_out _exec_rc=0
+            _exec_out=$(kubectl exec "$_backend_deploy" -n "$NAMESPACE" -- \
+                wget -qO- http://localhost:8000/api/v1/health 2>/dev/null) || _exec_rc=$?
+            if [ "$_exec_rc" -eq 0 ] && [ -n "$_exec_out" ]; then
+                ok "Backend health endpoint responding (via exec)"
+            else
+                error "Backend health endpoint unreachable"
+                _errors=$((_errors + 1))
+            fi
+        fi
+    fi
+
+    # 5. Summary
+    echo ""
+    if [ "$_errors" -gt 0 ]; then
+        die "$_errors health check(s) failed." "$EXIT_HEALTH"
+    fi
+    ok "All health checks passed"
+}
+
+# ===== migrate ==============================================================
+_usage_migrate() {
+    cat <<'USAGE'
+Usage: biznez-cli migrate [flags]
+
+Run database migrations by creating a Kubernetes Job.
+
+Flags:
+  -f, --values <file>     Values file (can be specified multiple times)
+  -r, --release <name>    Release name (default: biznez)
+  -n, --namespace <ns>    Target namespace
+  --timeout <seconds>     Job timeout (default: 600)
+  --dry-run               Show pending SQL without applying (alembic --sql mode)
+  -h, --help              Show this help
+USAGE
+}
+
+cmd_migrate() {
+    local timeout=600 dry_run=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|--values) VALUES_FILES+=("$2"); shift 2 ;;
+            --timeout)   timeout="$2"; shift 2 ;;
+            --dry-run)   dry_run=true; shift ;;
+            -h|--help)   _usage_migrate; return 0 ;;
+            *)           die "Unknown flag for migrate: $1" ;;
+        esac
+    done
+
+    if [ ${#VALUES_FILES[@]} -eq 0 ]; then
+        die "At least one values file is required: biznez-cli migrate -f values.yaml" "$EXIT_MIGRATE"
+    fi
+
+    _resolve_namespace
+    _require_cmd helm
+    _require_cmd kubectl
+
+    # Build values flags
+    local _values_flags=()
+    local _vf
+    for _vf in "${VALUES_FILES[@]}"; do
+        _values_flags+=("-f" "$_vf")
+    done
+
+    # 1. Render Job YAML
+    info "Rendering migration job from chart template..."
+    local _rendered _render_rc=0
+
+    local _extra_sets=("--set" "migration.mode=hook")
+    if [ "$dry_run" = "true" ]; then
+        _extra_sets+=("--set" "migration.command={alembic,upgrade,head,--sql}")
+    fi
+
+    _rendered=$(helm template "$RELEASE" "$CHART_DIR" "${_values_flags[@]}" \
+        --show-only templates/backend/migration-job.yaml \
+        "${_extra_sets[@]}" \
+        --namespace "$NAMESPACE" 2>&1) || _render_rc=$?
+
+    if [ "$_render_rc" -ne 0 ]; then
+        error "Failed to render migration job template:"
+        echo "$_rendered" >&2
+        die "Check values file and chart compatibility." "$EXIT_MIGRATE"
+    fi
+
+    # 2. Verify rendered output contains a Job
+    if ! echo "$_rendered" | grep -q "^kind: Job"; then
+        error "Migration job template did not render a Job resource."
+        error "Check values file and chart version. First 50 lines of output:"
+        echo "$_rendered" | head -50 >&2
+        die "Migration job rendering failed." "$EXIT_MIGRATE"
+    fi
+
+    # 3. Hook annotations are left in place (kubectl ignores them)
+
+    # 4. Safe job name rewriting
+    local _orig_name
+    _orig_name=$(echo "$_rendered" | awk '/^metadata:/{f=1} f && /^  name:/{print $2; exit}')
+
+    # Fallback extraction
+    if [ -z "$_orig_name" ]; then
+        _orig_name=$(echo "$_rendered" | grep '^  name:' | head -1 | awk '{print $2}') || true
+    fi
+    if [ -z "$_orig_name" ]; then
+        error "Could not extract job name from rendered migration template."
+        error "First 50 lines of rendered YAML:"
+        echo "$_rendered" | head -50 >&2
+        die "Migration job name extraction failed." "$EXIT_MIGRATE"
+    fi
+
+    local _new_name
+    _new_name="${_orig_name}-$(date +%s)"
+    _rendered=$(echo "$_rendered" | awk -v old="$_orig_name" -v new="$_new_name" \
+        '/^  name:/ && !done { sub(old, new); done=1 } {print}')
+
+    debug "Original job name: $_orig_name -> $_new_name"
+
+    # 5. Apply
+    info "Creating migration job '$_new_name'..."
+    echo "$_rendered" | kubectl apply -f - -n "$NAMESPACE"
+
+    info "Job has activeDeadlineSeconds=600, backoffLimit=3"
+
+    # 6. Wait for pod to start, then stream logs
+    info "Waiting for migration pod to start..."
+    sleep 3
+
+    info "Streaming migration logs..."
+    kubectl logs -f "job/$_new_name" -n "$NAMESPACE" 2>/dev/null || true
+
+    # 7. Wait for completion
+    info "Waiting for job completion (timeout: ${timeout}s)..."
+    local _complete_rc=0
+    kubectl wait --for=condition=Complete "job/$_new_name" \
+        -n "$NAMESPACE" --timeout="${timeout}s" 2>/dev/null || _complete_rc=$?
+
+    if [ "$_complete_rc" -ne 0 ]; then
+        error "Migration job did not complete successfully."
+        error "--- Job description ---"
+        kubectl describe "job/$_new_name" -n "$NAMESPACE" 2>/dev/null || true
+        error "--- Job logs ---"
+        kubectl logs "job/$_new_name" -n "$NAMESPACE" --all-containers --tail=200 2>/dev/null || true
+        die "Migration failed. Inspect the job: kubectl describe job/$_new_name -n $NAMESPACE" "$EXIT_MIGRATE"
+    fi
+
+    # Dry-run: clean up job
+    if [ "$dry_run" = "true" ]; then
+        info "Cleaning up dry-run job..."
+        kubectl delete "job/$_new_name" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+    fi
+
+    ok "Migration completed successfully"
+}
+
+# ===== status ===============================================================
+_usage_status() {
+    cat <<'USAGE'
+Usage: biznez-cli status [flags]
+
+Show release status and pod summary.
+
+Flags:
+  -r, --release <name>    Release name (default: biznez)
+  -n, --namespace <ns>    Target namespace
+  -h, --help              Show this help
+USAGE
+}
+
+cmd_status() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help) _usage_status; return 0 ;;
+            *)         die "Unknown flag for status: $1" ;;
+        esac
+    done
+
+    _resolve_namespace
+    _require_cmd helm
+    _require_cmd kubectl
+
+    echo "=== Release Status ==="
+    helm status "$RELEASE" -n "$NAMESPACE" 2>/dev/null || \
+        die "Release '$RELEASE' not found in namespace '$NAMESPACE'" "$EXIT_KUBE"
+
+    echo ""
+    echo "=== Pods ==="
+    kubectl get pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" 2>/dev/null || true
+
+    echo ""
+    echo "=== Services ==="
+    kubectl get svc -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" 2>/dev/null || true
+}
+
+# ===== uninstall ============================================================
+_usage_uninstall() {
+    cat <<'USAGE'
+Usage: biznez-cli uninstall [flags]
+
+Uninstall the Biznez Runtime release.
+
+Flags:
+  -r, --release <name>     Release name (default: biznez)
+  -n, --namespace <ns>     Target namespace
+  --yes                    Skip confirmation prompt
+  --delete-namespace       Delete the namespace after uninstall
+  --delete-pvcs            Delete PVCs matching the release
+  -h, --help               Show this help
+USAGE
+}
+
+cmd_uninstall() {
+    local yes=false delete_ns=false delete_pvcs=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes)              yes=true; shift ;;
+            --delete-namespace) delete_ns=true; shift ;;
+            --delete-pvcs)      delete_pvcs=true; shift ;;
+            -h|--help)          _usage_uninstall; return 0 ;;
+            *)                  die "Unknown flag for uninstall: $1" ;;
+        esac
+    done
+
+    _resolve_namespace
+    _require_cmd helm
+    _require_cmd kubectl
+
+    # Confirmation
+    if [ "$yes" = "false" ]; then
+        printf "Uninstall release '%s' from namespace '%s'? [y/N] " "$RELEASE" "$NAMESPACE"
+        local _answer
+        read -r _answer
+        case "$_answer" in
+            y|Y|yes|Yes) ;;
+            *) die "Aborted." "$EXIT_ABORT" ;;
+        esac
+    fi
+
+    info "Uninstalling release '$RELEASE'..."
+    local _rc=0
+    helm uninstall "$RELEASE" -n "$NAMESPACE" || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        die "Helm uninstall failed." "$EXIT_KUBE"
+    fi
+    ok "Release '$RELEASE' uninstalled"
+
+    # Delete PVCs
+    if [ "$delete_pvcs" = "true" ]; then
+        info "Deleting PVCs for release '$RELEASE'..."
+        kubectl delete pvc -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --ignore-not-found || true
+        ok "PVCs deleted"
+    fi
+
+    # Delete namespace
+    if [ "$delete_ns" = "true" ]; then
+        if [ "$yes" = "false" ]; then
+            printf "Delete namespace '%s'? This is irreversible. [y/N] " "$NAMESPACE"
+            local _ns_answer
+            read -r _ns_answer
+            case "$_ns_answer" in
+                y|Y|yes|Yes) ;;
+                *) info "Skipping namespace deletion."; return 0 ;;
+            esac
+        fi
+        info "Deleting namespace '$NAMESPACE'..."
+        kubectl delete namespace "$NAMESPACE" || true
+        ok "Namespace '$NAMESPACE' deleted"
+    fi
+}
+
+# ===== oidc-discover ========================================================
+_usage_oidc_discover() {
+    cat <<'USAGE'
+Usage: biznez-cli oidc-discover --issuer <url>
+
+Fetch OIDC provider metadata and show suggested configuration.
+
+Flags:
+  --issuer <url>    OIDC issuer URL (required)
+  -h, --help        Show this help
+USAGE
+}
+
+cmd_oidc_discover() {
+    local issuer=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --issuer) issuer="$2"; shift 2 ;;
+            -h|--help) _usage_oidc_discover; return 0 ;;
+            *)         die "Unknown flag for oidc-discover: $1" ;;
+        esac
+    done
+
+    if [ -z "$issuer" ]; then
+        die "Missing required flag: --issuer <url>" "$EXIT_ERROR"
+    fi
+
+    _require_cmd curl
+
+    local _well_known="${issuer%/}/.well-known/openid-configuration"
+    info "Fetching OIDC metadata from: $_well_known"
+
+    local _response _rc=0
+    _response=$(curl -sf --max-time 10 "$_well_known" 2>/dev/null) || _rc=$?
+
+    if [ "$_rc" -ne 0 ] || [ -z "$_response" ]; then
+        die "Could not fetch OIDC metadata from $_well_known" "$EXIT_NETWORK"
+    fi
+
+    echo ""
+    echo "=== OIDC Provider Metadata ==="
+    if command -v jq >/dev/null 2>&1; then
+        echo "$_response" | jq '{issuer, authorization_endpoint, token_endpoint, jwks_uri, scopes_supported, grant_types_supported}' 2>/dev/null || echo "$_response"
+    else
+        echo "$_response"
+    fi
+
+    # Extract jwks_uri for suggestion
+    local _jwks_uri
+    if command -v jq >/dev/null 2>&1; then
+        _jwks_uri=$(echo "$_response" | jq -r '.jwks_uri' 2>/dev/null) || true
+    else
+        _jwks_uri=$(echo "$_response" | grep -o '"jwks_uri"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\(http[^"]*\)".*/\1/') || true
+    fi
+
+    echo ""
+    echo "=== Suggested values.yaml ==="
+    cat <<EOF
+auth:
+  mode: oidc
+  oidc:
+    issuer: "${issuer}"
+    jwksUrl: "${_jwks_uri:-<discovered-jwks-uri>}"
+    audience: "<your-oauth2-client-id>"
+EOF
+}
+
+# ===== support-bundle =======================================================
+_usage_support_bundle() {
+    cat <<'USAGE'
+Usage: biznez-cli support-bundle [flags]
+
+Collect diagnostic data for troubleshooting.
+
+Flags:
+  -r, --release <name>    Release name (default: biznez)
+  -n, --namespace <ns>    Target namespace
+  -f, --values <file>     Include redacted values file(s) in bundle
+  -h, --help              Show this help
+
+Output: biznez-support-YYYYMMDD-HHMMSS.tar.gz in current directory.
+USAGE
+}
+
+_redact_values() {
+    # Multi-format redaction: YAML, ENV, URL-embedded credentials
+    sed -E \
+        -e 's/(encryptionKey|jwtSecret|password|apiKey|secretKey|publicKey|databaseUrl):[[:space:]]*"?[^"]*"?/\1: "***REDACTED***"/g' \
+        -e 's/(ENCRYPTION_KEY|JWT_SECRET_KEY|DATABASE_URL|POSTGRES_PASSWORD|LLM_API_KEY|LANGFUSE_SECRET_KEY|LANGFUSE_PUBLIC_KEY)=.*/\1=***REDACTED***/g' \
+        -e 's|(postgresql://[^:]+:)[^@]+(@)|\1***REDACTED***\2|g'
+}
+
+cmd_support_bundle() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|--values) VALUES_FILES+=("$2"); shift 2 ;;
+            -h|--help)   _usage_support_bundle; return 0 ;;
+            *)           die "Unknown flag for support-bundle: $1" ;;
+        esac
+    done
+
+    _resolve_namespace
+    _require_cmd kubectl
+    _require_cmd helm
+    _require_cmd tar
+
+    local _bundle_dir
+    _bundle_dir=$(mktemp -d)
+
+    info "Collecting support bundle for release '$RELEASE' in '$NAMESPACE'..."
+
+    # Release info
+    _collect_optional "helm list" "$_bundle_dir/helm-list.txt" \
+        helm list -n "$NAMESPACE"
+
+    # Rendered manifests (no secrets in manifests)
+    _collect_optional "helm manifest" "$_bundle_dir/helm-manifest.yaml" \
+        helm get manifest "$RELEASE" -n "$NAMESPACE"
+
+    # Namespaced resources
+    _collect_optional "pods/svc/events" "$_bundle_dir/resources.yaml" \
+        kubectl get pods,svc,ep,events -n "$NAMESPACE" -o yaml
+
+    _collect_optional "ingress" "$_bundle_dir/ingress.yaml" \
+        kubectl get ingress -n "$NAMESPACE" -o yaml
+
+    _collect_optional "pvc" "$_bundle_dir/pvc.yaml" \
+        kubectl get pvc -n "$NAMESPACE" -o yaml
+
+    _collect_optional "networkpolicy" "$_bundle_dir/networkpolicy.yaml" \
+        kubectl get networkpolicy -n "$NAMESPACE" -o yaml
+
+    # Pod logs
+    local _backend_deploy _frontend_deploy _gateway_deploy
+    _backend_deploy=$(_find_resource deployment backend) || true
+    _frontend_deploy=$(_find_resource deployment frontend) || true
+    _gateway_deploy=$(_find_resource deployment gateway) || true
+
+    if [ -n "$_backend_deploy" ]; then
+        _collect_optional "backend logs" "$_bundle_dir/logs-backend.txt" \
+            kubectl logs "$_backend_deploy" -n "$NAMESPACE" --tail=500
+    fi
+    if [ -n "$_frontend_deploy" ]; then
+        _collect_optional "frontend logs" "$_bundle_dir/logs-frontend.txt" \
+            kubectl logs "$_frontend_deploy" -n "$NAMESPACE" --tail=500
+    fi
+    if [ -n "$_gateway_deploy" ]; then
+        _collect_optional "gateway logs" "$_bundle_dir/logs-gateway.txt" \
+            kubectl logs "$_gateway_deploy" -n "$NAMESPACE" --tail=500
+    fi
+
+    # Versions
+    kubectl version --client > "$_bundle_dir/kubectl-version.txt" 2>&1 || true
+    helm version > "$_bundle_dir/helm-version.txt" 2>&1 || true
+
+    # Cluster-wide (optional — may fail due to RBAC)
+    _collect_optional "nodes" "$_bundle_dir/nodes.txt" \
+        kubectl get nodes -o wide
+    # Redact IPs from nodes output
+    if [ -f "$_bundle_dir/nodes.txt" ]; then
+        sed -E 's/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/x.x.x.x/g' "$_bundle_dir/nodes.txt" > "$_bundle_dir/nodes-redacted.txt"
+        mv "$_bundle_dir/nodes-redacted.txt" "$_bundle_dir/nodes.txt"
+    fi
+
+    # Redacted values files
+    local _vf
+    for _vf in "${VALUES_FILES[@]}"; do
+        if [ -f "$_vf" ]; then
+            local _basename
+            _basename=$(basename "$_vf")
+            _redact_values < "$_vf" > "$_bundle_dir/values-${_basename}"
+            ok "Included redacted values: $_basename"
+        fi
+    done
+
+    # Archive
+    local _archive
+    _archive="biznez-support-$(date +%Y%m%d-%H%M%S).tar.gz"
+    tar czf "$_archive" -C "$_bundle_dir" .
+
+    # Cleanup temp dir
+    rm -rf "$_bundle_dir"
+
+    ok "Support bundle created: $_archive"
+}
+
+# ===== backup-db ============================================================
+_usage_backup_db() {
+    cat <<'USAGE'
+Usage: biznez-cli backup-db [flags]
+
+Create a pg_dump backup of embedded PostgreSQL.
+
+Flags:
+  -r, --release <name>    Release name (default: biznez)
+  -n, --namespace <ns>    Target namespace
+  --output <file>         Output file (default: biznez-backup-YYYYMMDD-HHMMSS.dump)
+  -h, --help              Show this help
+USAGE
+}
+
+cmd_backup_db() {
+    local output=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --output) output="$2"; shift 2 ;;
+            -h|--help) _usage_backup_db; return 0 ;;
+            *)         die "Unknown flag for backup-db: $1" ;;
+        esac
+    done
+
+    _resolve_namespace
+    _require_cmd kubectl
+
+    # Find postgres pod
+    local _pg_pod
+    _pg_pod=$(_find_resource pod postgres)
+    if [ -z "$_pg_pod" ]; then
+        die "No embedded postgres pod found for release '$RELEASE'. backup-db only works with embedded postgres." "$EXIT_KUBE"
+    fi
+
+    if [ -z "$output" ]; then
+        output="biznez-backup-$(date +%Y%m%d-%H%M%S).dump"
+    fi
+
+    info "Backing up database from $_pg_pod..."
+    kubectl exec "$_pg_pod" -n "$NAMESPACE" -- \
+        pg_dump -U biznez -d biznez_platform --format=custom > "$output"
+
+    local _size
+    _size=$(wc -c < "$output" | awk '{printf "%.1fK", $1/1024}')
+    ok "Backup created: $output ($_size)"
+}
+
+# ===== restore-db ===========================================================
+_usage_restore_db() {
+    cat <<'USAGE'
+Usage: biznez-cli restore-db --file <backup.dump> [flags]
+
+Restore a pg_dump backup to embedded PostgreSQL.
+
+WARNING: This overwrites the current database.
+
+Flags:
+  --file <path>            Backup file to restore (required)
+  -r, --release <name>     Release name (default: biznez)
+  -n, --namespace <ns>     Target namespace
+  --yes                    Skip confirmation prompt
+  -h, --help               Show this help
+USAGE
+}
+
+cmd_restore_db() {
+    local file="" yes=false
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --file) file="$2"; shift 2 ;;
+            --yes)  yes=true; shift ;;
+            -h|--help) _usage_restore_db; return 0 ;;
+            *)         die "Unknown flag for restore-db: $1" ;;
+        esac
+    done
+
+    if [ -z "$file" ]; then
+        die "Missing required flag: --file <backup.dump>" "$EXIT_ERROR"
+    fi
+    if [ ! -f "$file" ]; then
+        die "Backup file not found: $file" "$EXIT_ERROR"
+    fi
+
+    _resolve_namespace
+    _require_cmd kubectl
+
+    # Find postgres pod
+    local _pg_pod
+    _pg_pod=$(_find_resource pod postgres)
+    if [ -z "$_pg_pod" ]; then
+        die "No embedded postgres pod found for release '$RELEASE'. restore-db only works with embedded postgres." "$EXIT_KUBE"
+    fi
+
+    # Confirmation
+    if [ "$yes" = "false" ]; then
+        printf "This will OVERWRITE the current database. Continue? [y/N] "
+        local _answer
+        read -r _answer
+        case "$_answer" in
+            y|Y|yes|Yes) ;;
+            *) die "Aborted." "$EXIT_ABORT" ;;
+        esac
+    fi
+
+    # Scale backend to 0
+    local _backend_deploy
+    _backend_deploy=$(_find_resource deployment backend)
+    if [ -n "$_backend_deploy" ]; then
+        info "Scaling backend to 0 replicas..."
+        kubectl scale "$_backend_deploy" --replicas=0 -n "$NAMESPACE"
+        sleep 5
+    fi
+
+    # Copy and restore
+    info "Copying backup to postgres pod..."
+    kubectl cp "$file" "$NAMESPACE/$(_echo_pod_name "$_pg_pod"):/tmp/restore.dump"
+
+    info "Running pg_restore..."
+    local _restore_rc=0
+    kubectl exec "$_pg_pod" -n "$NAMESPACE" -- \
+        pg_restore -U biznez -d biznez_platform --clean --if-exists /tmp/restore.dump 2>/dev/null || _restore_rc=$?
+
+    # Clean up temp file in pod
+    kubectl exec "$_pg_pod" -n "$NAMESPACE" -- rm -f /tmp/restore.dump 2>/dev/null || true
+
+    # Scale backend back
+    if [ -n "$_backend_deploy" ]; then
+        info "Scaling backend back..."
+        kubectl scale "$_backend_deploy" --replicas=1 -n "$NAMESPACE"
+    fi
+
+    if [ "$_restore_rc" -ne 0 ]; then
+        warn "pg_restore exited with code $_restore_rc (some warnings are normal for --clean --if-exists)"
+    fi
+
+    ok "Database restore completed"
+
+    # Health check
+    info "Running post-restore health check..."
+    cmd_health_check --timeout 120
+}
+
+# Helper to extract pod name from "pod/name" format
+_echo_pod_name() {
+    local _v="$1"
+    echo "${_v#pod/}"
+}
+
+# ===== upgrade ==============================================================
+_usage_upgrade() {
+    cat <<'USAGE'
+Usage: biznez-cli upgrade [flags] [-- <helm-flags>]
+
+Orchestrated upgrade with pre-checks and optional rollback.
+
+Flags:
+  -f, --values <file>     Values file (can be specified multiple times)
+  -r, --release <name>    Release name (default: biznez)
+  -n, --namespace <ns>    Target namespace
+  -h, --help              Show this help
+
+Everything after -- is passed directly to helm upgrade.
+USAGE
+}
+
+cmd_upgrade() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -f|--values) VALUES_FILES+=("$2"); shift 2 ;;
+            -h|--help)   _usage_upgrade; return 0 ;;
+            *)           die "Unknown flag for upgrade: $1" ;;
+        esac
+    done
+
+    if [ ${#VALUES_FILES[@]} -eq 0 ]; then
+        die "At least one values file is required: biznez-cli upgrade -f values.yaml" "$EXIT_VALIDATE"
+    fi
+
+    _resolve_namespace
+    _require_cmd helm
+    _require_cmd kubectl
+
+    # Pre-upgrade validation
+    info "Running pre-upgrade validation..."
+    cmd_validate
+
+    # Build helm command
+    local _helm_args=("upgrade" "$RELEASE" "$CHART_DIR")
+    local _vf
+    for _vf in "${VALUES_FILES[@]}"; do
+        _helm_args+=("-f" "$_vf")
+    done
+    _helm_args+=("--namespace" "$NAMESPACE" "--wait" "--timeout" "300s")
+
+    if [ ${#HELM_PASSTHROUGH[@]} -gt 0 ]; then
+        _helm_args+=("${HELM_PASSTHROUGH[@]}")
+    fi
+
+    info "Upgrading release '$RELEASE'..."
+    local _upgrade_rc=0
+    helm "${_helm_args[@]}" || _upgrade_rc=$?
+
+    if [ "$_upgrade_rc" -ne 0 ]; then
+        error "Helm upgrade failed."
+        printf "Rollback to previous revision? [Y/n] "
+        local _answer
+        read -r _answer
+        case "$_answer" in
+            n|N|no|No) ;;
+            *)
+                info "Rolling back..."
+                helm rollback "$RELEASE" -n "$NAMESPACE" || true
+                ok "Rollback completed"
+                ;;
+        esac
+        die "Upgrade failed." "$EXIT_KUBE"
+    fi
+
+    ok "Upgrade completed"
+
+    # Post-upgrade health check
+    info "Running post-upgrade health check..."
+    cmd_health_check --timeout 120
+}
+
+# ---------------------------------------------------------------------------
+# Section 5: Main Help, Flag Parsing, Dispatch
+# ---------------------------------------------------------------------------
+
+_usage_main() {
+    cat <<USAGE
+biznez-cli $CLI_VERSION -- Biznez Agentic Runtime operator CLI
+
+Usage: biznez-cli [global-flags] <command> [command-flags] [-- <helm-flags>]
+
+Commands (P0 -- core):
+  generate-secrets    Generate cryptographic secrets for deployments
+  validate            Pre-flight validation of values file and cluster
+  validate-secrets    Verify K8s Secrets exist with required keys
+  install             Install or upgrade via Helm
+  health-check        Verify deployment health
+  migrate             Run database migrations via K8s Job
+
+Commands (P1 -- operational):
+  status              Show release status and pod summary
+  uninstall           Uninstall the release
+  oidc-discover       Fetch OIDC provider metadata
+  support-bundle      Collect diagnostic data for troubleshooting
+
+Commands (P2 -- data management):
+  backup-db           pg_dump backup of embedded PostgreSQL
+  restore-db          pg_restore into embedded PostgreSQL
+  upgrade             Orchestrated upgrade with pre-checks and rollback
+
+Global flags:
+  -n, --namespace <ns>        Target K8s namespace
+  -r, --release <name>        Helm release name (default: biznez)
+  -f, --values <file>         Values file (can repeat)
+  --profile <eval|production> Override profile detection
+  --no-color                  Disable colored output
+  -v, --verbose               Enable debug output
+  -h, --help                  Show this help
+  --version                   Show version
+
+Use 'biznez-cli <command> --help' for command-specific help.
+USAGE
+}
+
+main() {
+    # Parse global flags
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -n|--namespace)  NAMESPACE="$2"; shift 2 ;;
+            -r|--release)    RELEASE="$2"; shift 2 ;;
+            -f|--values)     VALUES_FILES+=("$2"); shift 2 ;;
+            --profile)       PROFILE="$2"; PROFILE_EXPLICIT=true; shift 2 ;;
+            --no-color)      NO_COLOR=true; shift ;;
+            -v|--verbose)    VERBOSE=true; shift ;;
+            -h|--help)       _usage_main; exit 0 ;;
+            --version)       echo "biznez-cli $CLI_VERSION"; exit 0 ;;
+            --)              shift; HELM_PASSTHROUGH=("$@"); break ;;
+            -*)              # Unknown global flag -- might be command-specific
+                             break ;;
+            *)               break ;;
+        esac
+    done
+
+    local cmd="${1:-help}"
+    shift 2>/dev/null || true
+
+    case "$cmd" in
+        generate-secrets)  cmd_generate_secrets "$@" ;;
+        validate)          cmd_validate "$@" ;;
+        validate-secrets)  cmd_validate_secrets "$@" ;;
+        install)           cmd_install "$@" ;;
+        health-check)      cmd_health_check "$@" ;;
+        migrate)           cmd_migrate "$@" ;;
+        status)            cmd_status "$@" ;;
+        uninstall)         cmd_uninstall "$@" ;;
+        oidc-discover)     cmd_oidc_discover "$@" ;;
+        support-bundle)    cmd_support_bundle "$@" ;;
+        backup-db)         cmd_backup_db "$@" ;;
+        restore-db)        cmd_restore_db "$@" ;;
+        upgrade)           cmd_upgrade "$@" ;;
+        help)              _usage_main ;;
+        *)                 die "Unknown command: $cmd. Run 'biznez-cli help' for usage." ;;
+    esac
+}
+
+main "$@"
