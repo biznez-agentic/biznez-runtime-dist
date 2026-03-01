@@ -1,1 +1,96 @@
-# Placeholder -- minimal production example values populated in Phase 5
+# Biznez Agentic Runtime -- Minimal Production Values
+#
+# This file contains the minimum required settings for a production deployment.
+# All required fields are shown; optional fields are commented out.
+#
+# Prerequisites:
+#   1. Create K8s Secrets before install (see docs/PRODUCTION-CHECKLIST.md)
+#   2. Validate: biznez-cli validate -f examples/production-minimal.yaml --profile production
+#   3. Install:  biznez-cli install -f examples/production-minimal.yaml
+#
+# See docs/INSTALL.md for the full production install walkthrough.
+
+global:
+  profile: production
+
+  # Require digest-pinned images (prevents tag mutation attacks)
+  requireDigests: true
+
+  # Private registry prefix (all images pulled from here)
+  imageRegistry: "registry.example.com/biznez"
+
+  # Registry pull credentials
+  imagePullSecrets:
+    - name: regcred
+
+# -- Backend ------------------------------------------------------------------
+backend:
+  # Pre-created K8s Secret (must contain ENCRYPTION_KEY, JWT_SECRET_KEY)
+  existingSecret: biznez-backend-secrets
+
+# -- Database (external managed) ----------------------------------------------
+postgres:
+  enabled: false   # Embedded postgres is eval-only
+  external:
+    host: db.example.com                       # Required: for wait-for-db healthcheck
+    port: "5432"
+    database: biznez_platform
+    sslMode: require
+    existingSecret: biznez-db-credentials      # Must contain DATABASE_URL key
+
+# -- Authentication (OIDC) ----------------------------------------------------
+auth:
+  mode: oidc
+  oidc:
+    issuer: "https://idp.example.com"          # Your OIDC provider issuer URL
+    audience: "biznez-app"                     # OAuth2 client/audience ID
+
+# -- Migrations ----------------------------------------------------------------
+migration:
+  mode: manual   # Run manually: biznez-cli migrate
+
+# -- High Availability ---------------------------------------------------------
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+
+pdb:
+  enabled: true
+
+# -- Network Security ----------------------------------------------------------
+networkPolicy:
+  enabled: true
+  egress:
+    allowAllHttps: false   # Restrict egress in production
+    # Configure explicit egress for your environment:
+    # proxy:
+    #   cidrs: ["10.0.0.0/8"]
+    #   ports: [3128, 443]
+    # externalServices:
+    #   cidrs: ["203.0.113.0/24"]
+    #   ports: [443]
+
+# -- LLM Provider (uncomment if using) ----------------------------------------
+# llm:
+#   provider: anthropic           # openai | anthropic | custom
+#   existingSecret: biznez-llm    # Must contain LLM_API_KEY
+
+# -- Ingress (uncomment to expose externally) ----------------------------------
+# ingress:
+#   enabled: true
+#   className: nginx
+#   applyNginxStreamingAnnotations: true
+#   hosts:
+#     - host: api.biznez.example.com
+#       paths:
+#         - path: /
+#           service: backend
+#     - host: app.biznez.example.com
+#       paths:
+#         - path: /
+#           service: frontend
+#   tls:
+#     enabled: true
+#     mode: existingSecret
+#     secretName: biznez-tls
