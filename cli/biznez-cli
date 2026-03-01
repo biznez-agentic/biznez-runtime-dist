@@ -939,9 +939,17 @@ cmd_health_check() {
         else
             warn "Could not reach backend health endpoint via port-forward"
             warn "Trying kubectl exec fallback..."
+            local _backend_pod
+            _backend_pod=$(kubectl get pods \
+                -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=backend" \
+                -n "$NAMESPACE" -o name 2>/dev/null | head -1) || true
             local _exec_out _exec_rc=0
-            _exec_out=$(kubectl exec "$_backend_deploy" -n "$NAMESPACE" -- \
-                wget -qO- http://localhost:8000/api/v1/health 2>/dev/null) || _exec_rc=$?
+            if [ -n "$_backend_pod" ]; then
+                _exec_out=$(kubectl exec "$_backend_pod" -n "$NAMESPACE" -- \
+                    wget -qO- http://localhost:8000/api/v1/health 2>/dev/null) || _exec_rc=$?
+            else
+                _exec_rc=1
+            fi
             if [ "$_exec_rc" -eq 0 ] && [ -n "$_exec_out" ]; then
                 ok "Backend health endpoint responding (via exec)"
             else
@@ -1288,9 +1296,8 @@ Flags:
   -r, --release <name>    Release name (default: biznez)
   -n, --namespace <ns>    Target namespace
   -f, --values <file>     Include redacted values file(s) in bundle
+  --output <file>         Output archive path (default: biznez-support-YYYYMMDD-HHMMSS.tar.gz)
   -h, --help              Show this help
-
-Output: biznez-support-YYYYMMDD-HHMMSS.tar.gz in current directory.
 USAGE
 }
 
@@ -1303,9 +1310,11 @@ _redact_values() {
 }
 
 cmd_support_bundle() {
+    local _output_file=""
     while [ $# -gt 0 ]; do
         case "$1" in
             -f|--values) VALUES_FILES+=("$2"); shift 2 ;;
+            --output)    _output_file="$2"; shift 2 ;;
             -h|--help)   _usage_support_bundle; return 0 ;;
             *)           die "Unknown flag for support-bundle: $1" ;;
         esac
@@ -1325,6 +1334,14 @@ cmd_support_bundle() {
     _collect_optional "helm list" "$_bundle_dir/helm-list.txt" \
         helm list -n "$NAMESPACE"
 
+    # Helm values (redacted)
+    local _raw_values
+    _raw_values=$(helm get values "$RELEASE" -n "$NAMESPACE" 2>/dev/null) || true
+    if [ -n "$_raw_values" ]; then
+        echo "$_raw_values" | _redact_values > "$_bundle_dir/helm-values.yaml"
+        ok "Collected helm-values (redacted)"
+    fi
+
     # Rendered manifests (no secrets in manifests)
     _collect_optional "helm manifest" "$_bundle_dir/helm-manifest.yaml" \
         helm get manifest "$RELEASE" -n "$NAMESPACE"
@@ -1332,6 +1349,10 @@ cmd_support_bundle() {
     # Namespaced resources
     _collect_optional "pods/svc/events" "$_bundle_dir/resources.yaml" \
         kubectl get pods,svc,ep,events -n "$NAMESPACE" -o yaml
+
+    # Pod describe (detailed pod status, events, conditions)
+    _collect_optional "pod-describe" "$_bundle_dir/pod-describe.txt" \
+        kubectl describe pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE"
 
     _collect_optional "ingress" "$_bundle_dir/ingress.yaml" \
         kubectl get ingress -n "$NAMESPACE" -o yaml
@@ -1386,14 +1407,15 @@ cmd_support_bundle() {
     done
 
     # Archive
-    local _archive
-    _archive="biznez-support-$(date +%Y%m%d-%H%M%S).tar.gz"
-    tar czf "$_archive" -C "$_bundle_dir" .
+    if [ -z "$_output_file" ]; then
+        _output_file="biznez-support-$(date +%Y%m%d-%H%M%S).tar.gz"
+    fi
+    tar czf "$_output_file" -C "$_bundle_dir" .
 
     # Cleanup temp dir
     rm -rf "$_bundle_dir"
 
-    ok "Support bundle created: $_archive"
+    ok "Support bundle created: $_output_file"
 }
 
 # ===== backup-db ============================================================
