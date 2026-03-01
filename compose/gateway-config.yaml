@@ -1,0 +1,11 @@
+# Agent Gateway configuration for Docker Compose evaluation.
+# Add MCP server targets and routes as needed.
+# See: https://github.com/agentgateway/agentgateway
+#
+# Enable the gateway service with:
+#   docker compose --profile gateway up -d
+binds:
+  - port: 8080
+    listeners:
+      - name: default
+        routes: []
