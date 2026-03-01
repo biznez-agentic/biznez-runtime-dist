@@ -1,1 +1,27 @@
-# Placeholder -- eval quickstart example values populated in Phase 2
+# Biznez Agentic Runtime -- Evaluation Quick-Start Values
+#
+# Copy-pasteable values for a minimal evaluation install.
+# Secrets are generated separately via:
+#   biznez-cli generate-secrets --format yaml | kubectl apply -n biznez -f -
+#
+# Install:
+#   biznez-cli install -f examples/eval-quickstart.yaml --create-namespace
+#
+# See docs/INSTALL.md for the full quick-start walkthrough.
+
+global:
+  profile: eval
+
+backend:
+  config:
+    environment: development
+    logLevel: info
+
+postgres:
+  enabled: true
+
+migration:
+  mode: auto
+
+auth:
+  mode: local
