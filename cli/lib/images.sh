@@ -48,9 +48,11 @@ _img_require_tool() {
 # ---------------------------------------------------------------------------
 
 _img_parse_lock() {
-    # Parse images.lock → tab-separated records
+    # Parse images.lock → pipe-separated records
     # Args: $1 = manifest path, $2 = "yq" or "awk"
-    # Output: name\tsourceRepo\ttargetRepo\treleaseRepo\ttag\timageDigest\tindexDigest
+    # Output: name|sourceRepo|targetRepo|releaseRepo|tag|imageDigest|indexDigest
+    # NOTE: Uses pipe (not tab) as delimiter because bash IFS collapses
+    # consecutive tab delimiters, losing empty fields.
     local manifest="$1"
     local parser="${2:-yq}"
 
@@ -62,7 +64,7 @@ _img_parse_lock() {
         if ! command -v yq >/dev/null 2>&1; then
             die "yq (mikefarah/yq v4+) is required. Install: brew install yq" "$EXIT_PREREQ"
         fi
-        yq eval '.images[] | [.name, .sourceRepo, .targetRepo, .releaseRepo, .tag, .imageDigest, .indexDigest] | @tsv' "$manifest"
+        yq eval '.images[] | [.name, .sourceRepo, .targetRepo, .releaseRepo, .tag, .imageDigest, .indexDigest] | join("|")' "$manifest"
     else
         # awk fallback -- emergency only, may mis-parse complex YAML
         warn "Using awk YAML parser. Results may be incorrect. Install yq for reliable parsing."
@@ -75,7 +77,7 @@ _img_parse_lock_awk() {
     # Fragile: only works with the exact schema defined in phase-8 plan
     local manifest="$1"
     awk '
-    /^  - name:/ { if (name != "") print name "\t" sourceRepo "\t" targetRepo "\t" releaseRepo "\t" tag "\t" imageDigest "\t" indexDigest;
+    /^  - name:/ { if (name != "") print name "|" sourceRepo "|" targetRepo "|" releaseRepo "|" tag "|" imageDigest "|" indexDigest;
                    name=$3; sourceRepo=""; targetRepo=""; releaseRepo=""; tag=""; imageDigest=""; indexDigest="" }
     /^    sourceRepo:/ { sourceRepo=$2; gsub(/^"/, "", sourceRepo); gsub(/"$/, "", sourceRepo) }
     /^    targetRepo:/ { targetRepo=$2; gsub(/^"/, "", targetRepo); gsub(/"$/, "", targetRepo) }
@@ -83,7 +85,7 @@ _img_parse_lock_awk() {
     /^    tag:/ { tag=$2; gsub(/^"/, "", tag); gsub(/"$/, "", tag) }
     /^    imageDigest:/ { imageDigest=$2; gsub(/^"/, "", imageDigest); gsub(/"$/, "", imageDigest) }
     /^    indexDigest:/ { indexDigest=$2; gsub(/^"/, "", indexDigest); gsub(/"$/, "", indexDigest) }
-    END { if (name != "") print name "\t" sourceRepo "\t" targetRepo "\t" releaseRepo "\t" tag "\t" imageDigest "\t" indexDigest }
+    END { if (name != "") print name "|" sourceRepo "|" targetRepo "|" releaseRepo "|" tag "|" imageDigest "|" indexDigest }
     ' "$manifest"
 }
 
@@ -448,7 +450,7 @@ EOF
         local _name _source _target _release _tag _img_dig _idx_dig
         local _parser="yq"
         if ! command -v yq >/dev/null 2>&1; then _parser="awk"; fi
-        while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+        while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
             if [ "$_img_first" = "true" ]; then _img_first=false; else echo ","; fi
             printf '    {"name":"%s","sourceRepo":"%s","targetRepo":"%s","releaseRepo":"%s","tag":"%s","imageDigest":"%s","indexDigest":"%s"}' \
                 "$_name" "$_source" "$_target" "$_release" "$_tag" "$_img_dig" "$_idx_dig"
@@ -501,7 +503,7 @@ _rel_generate_sbom() {
     echo "[" > "$sbom_file"
 
     local _name _source _target _release _tag _img_dig _idx_dig
-    while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+    while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
         local _ref
         if [ -n "$_release" ] && [ -n "$_img_dig" ]; then
             _ref="${_release}@${_img_dig}"
@@ -553,7 +555,7 @@ _rel_run_scan() {
     echo "[" > "$scan_file"
 
     local _name _source _target _release _tag _img_dig _idx_dig
-    while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+    while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
         local _ref
         if [ -n "$_release" ] && [ -n "$_img_dig" ]; then
             _ref="${_release}@${_img_dig}"
@@ -602,7 +604,7 @@ _rel_sign_artifacts() {
 
     # Sign each image in the release registry by digest
     local _name _source _target _release _tag _img_dig _idx_dig
-    while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+    while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
         if [ -z "$_release" ] || [ -z "$_img_dig" ]; then
             warn "Skipping sign for $_name: no releaseRepo or digest"
             continue
@@ -708,7 +710,7 @@ USAGE
     # Validate releaseRepo is populated for all images
     local _has_empty_release=false
     local _name _source _target _release _tag _img_dig _idx_dig
-    while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+    while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
         if [ -z "$_release" ]; then
             error "Image $_name has empty releaseRepo. Run 'build-release' first."
             _has_empty_release=true
@@ -734,7 +736,7 @@ USAGE
     info "Exporting ${format} images..."
 
     if [ "$format" = "oci" ]; then
-        while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+        while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
             local _ref
             _ref=$(_img_ref "$_release" "$_img_dig" "$_tag")
             local _oci_dir="${bundle_root}/oci/${_name}"
@@ -762,7 +764,7 @@ USAGE
             esac
         done < <(_img_parse_lock "$manifest" "$parser")
     elif [ "$format" = "docker-archive" ]; then
-        while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+        while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
             local _ref
             _ref=$(_img_ref "$_release" "$_img_dig" "$_tag")
             info "  Exporting $_name (docker-archive)"
@@ -892,7 +894,7 @@ USAGE
         # Push to registry
         info "Importing images to registry: $registry"
 
-        while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+        while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
             local _target_ref="${registry}/${_target}:${_tag}"
 
             info "  Importing $_name → ${_target_ref}"
@@ -961,7 +963,7 @@ USAGE
         # Load into Docker daemon
         info "Loading images into Docker daemon..."
 
-        while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+        while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
             local _local_ref="${_target}:${_tag}"
 
             info "  Loading $_name → ${_local_ref}"
@@ -1077,7 +1079,7 @@ USAGE
 
     info "Verifying images in registry: $registry"
 
-    while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+    while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
         local _target_ref="${registry}/${_target}"
 
         # Tag→digest check
@@ -1274,7 +1276,7 @@ USAGE
     fi
 
     local _name _source _target _release _tag _img_dig _idx_dig
-    while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+    while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
         info "  Resolving: $_name (${_source}:${_tag})"
         local _digests
         _digests=$(_img_resolve_digest "$tool" "$_source" "$_tag" "$platform") || \
@@ -1298,7 +1300,7 @@ USAGE
     if [ "$skip_mirror" = "false" ]; then
         info "Mirroring images to release registry: ${release_registry}"
 
-        while IFS="$(printf '\t')" read -r _name _source _target _release _tag _img_dig _idx_dig; do
+        while IFS="|" read -r _name _source _target _release _tag _img_dig _idx_dig; do
             local _release_ref="${release_registry}/${_target}:${_tag}"
             local _source_ref
             _source_ref=$(_img_ref "$_source" "$_img_dig" "$_tag")

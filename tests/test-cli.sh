@@ -197,9 +197,9 @@ if [ -f "$_LIB_FILE" ]; then
     # Need to provide stub functions the lib expects
     _stub_die() { echo "DIE: $1" >&2; return 1; }
     _stub_warn() { echo "WARN: $1" >&2; }
-    # Use awk parser directly
+    # Use awk parser directly (pipe-delimited to avoid bash IFS whitespace collapsing)
     _awk_records=$(awk '
-    /^  - name:/ { if (name != "") print name "\t" sourceRepo "\t" targetRepo "\t" releaseRepo "\t" tag "\t" imageDigest "\t" indexDigest;
+    /^  - name:/ { if (name != "") print name "|" sourceRepo "|" targetRepo "|" releaseRepo "|" tag "|" imageDigest "|" indexDigest;
                    name=$3; sourceRepo=""; targetRepo=""; releaseRepo=""; tag=""; imageDigest=""; indexDigest="" }
     /^    sourceRepo:/ { sourceRepo=$2; gsub(/^"/, "", sourceRepo); gsub(/"$/, "", sourceRepo) }
     /^    targetRepo:/ { targetRepo=$2; gsub(/^"/, "", targetRepo); gsub(/"$/, "", targetRepo) }
@@ -207,43 +207,43 @@ if [ -f "$_LIB_FILE" ]; then
     /^    tag:/ { tag=$2; gsub(/^"/, "", tag); gsub(/"$/, "", tag) }
     /^    imageDigest:/ { imageDigest=$2; gsub(/^"/, "", imageDigest); gsub(/"$/, "", imageDigest) }
     /^    indexDigest:/ { indexDigest=$2; gsub(/^"/, "", indexDigest); gsub(/"$/, "", indexDigest) }
-    END { if (name != "") print name "\t" sourceRepo "\t" targetRepo "\t" releaseRepo "\t" tag "\t" imageDigest "\t" indexDigest }
+    END { if (name != "") print name "|" sourceRepo "|" targetRepo "|" releaseRepo "|" tag "|" imageDigest "|" indexDigest }
     ' "$_tmp_lock")
 
     _awk_count=$(echo "$_awk_records" | wc -l | tr -d ' ')
     _test "awk parser: 2 images parsed" [ "$_awk_count" -eq 2 ]
 
     # Verify field extraction
-    _first_name=$(echo "$_awk_records" | head -1 | cut -f1)
+    _first_name=$(echo "$_awk_records" | head -1 | cut -d'|' -f1)
     _test "awk parser: first image name is test-api" [ "$_first_name" = "test-api" ]
 
-    _first_source=$(echo "$_awk_records" | head -1 | cut -f2)
+    _first_source=$(echo "$_awk_records" | head -1 | cut -d'|' -f2)
     _test "awk parser: sourceRepo with URL colons" [ "$_first_source" = "ghcr.io/org/test-api" ]
 
-    _first_digest=$(echo "$_awk_records" | head -1 | cut -f6)
+    _first_digest=$(echo "$_awk_records" | head -1 | cut -d'|' -f6)
     _test "awk parser: imageDigest extracted" [ "$_first_digest" = "sha256:abc123" ]
 
-    _second_name=$(echo "$_awk_records" | tail -1 | cut -f1)
+    _second_name=$(echo "$_awk_records" | tail -1 | cut -d'|' -f1)
     _test "awk parser: second image name is test-db" [ "$_second_name" = "test-db" ]
 
     # Conditional yq parser test
     if command -v yq >/dev/null 2>&1; then
         echo ""
         echo "--- yq parser tests ---"
-        _yq_records=$(yq eval '.images[] | [.name, .sourceRepo, .targetRepo, .releaseRepo, .tag, .imageDigest, .indexDigest] | @tsv' "$_tmp_lock")
+        _yq_records=$(yq eval '.images[] | [.name, .sourceRepo, .targetRepo, .releaseRepo, .tag, .imageDigest, .indexDigest] | join("|")' "$_tmp_lock")
         _yq_count=$(echo "$_yq_records" | wc -l | tr -d ' ')
         _test "yq parser: 2 images parsed" [ "$_yq_count" -eq 2 ]
 
-        _yq_first_name=$(echo "$_yq_records" | head -1 | cut -f1)
+        _yq_first_name=$(echo "$_yq_records" | head -1 | cut -d'|' -f1)
         _test "yq parser: first image name is test-api" [ "$_yq_first_name" = "test-api" ]
 
-        _yq_first_source=$(echo "$_yq_records" | head -1 | cut -f2)
+        _yq_first_source=$(echo "$_yq_records" | head -1 | cut -d'|' -f2)
         _test "yq parser: sourceRepo with URL colons" [ "$_yq_first_source" = "ghcr.io/org/test-api" ]
 
-        _yq_first_digest=$(echo "$_yq_records" | head -1 | cut -f6)
+        _yq_first_digest=$(echo "$_yq_records" | head -1 | cut -d'|' -f6)
         _test "yq parser: imageDigest extracted" [ "$_yq_first_digest" = "sha256:abc123" ]
 
-        _yq_release=$(echo "$_yq_records" | head -1 | cut -f4)
+        _yq_release=$(echo "$_yq_records" | head -1 | cut -d'|' -f4)
         _test "yq parser: releaseRepo extracted" [ "$_yq_release" = "registry.example.com/mycompany/test-api" ]
     else
         echo "[SKIP] yq parser tests: yq not found"
