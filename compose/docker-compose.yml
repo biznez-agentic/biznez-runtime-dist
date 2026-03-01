@@ -23,6 +23,7 @@ services:
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15-alpine
+    pull_policy: ${COMPOSE_PULL_POLICY:-if_not_present}
     restart: unless-stopped
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
