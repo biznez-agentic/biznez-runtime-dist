@@ -1,0 +1,181 @@
+name: Teardown Eval Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_id:
+        description: 'Environment ID (e.g., customer-ab12)'
+        required: true
+        type: string
+      region:
+        description: 'GCP region'
+        required: true
+        type: choice
+        options:
+          - europe-west2
+          - us-central1
+          - us-east1
+          - asia-southeast1
+      gcp_project_id:
+        description: 'GCP project ID'
+        required: false
+        type: string
+        default: 'mcpserver-469909'
+      confirm_destroy:
+        description: 'Type the env_id to confirm destruction'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ENV_ID: ${{ inputs.env_id }}
+  REGION: ${{ inputs.region }}
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+  CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+
+concurrency:
+  group: eval-${{ inputs.env_id }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Validate confirmation
+  # -------------------------------------------------------------------------
+  validate:
+    name: Validate Confirmation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate env_id format
+        run: |
+          if [[ ! "$ENV_ID" =~ ^[a-z][a-z0-9-]{2,19}-[a-z0-9]{4}$ ]]; then
+            echo "::error::env_id must match ^[a-z][a-z0-9-]{2,19}-[a-z0-9]{4}$"
+            exit 1
+          fi
+
+      - name: Validate confirmation matches env_id
+        run: |
+          if [ "$CONFIRM_DESTROY" != "$ENV_ID" ]; then
+            echo "::error::confirm_destroy must exactly match env_id to proceed"
+            exit 1
+          fi
+          echo "Destruction confirmed for env_id: ${ENV_ID}"
+
+  # -------------------------------------------------------------------------
+  # Job 2: Uninstall runtime (continue-on-error)
+  # -------------------------------------------------------------------------
+  uninstall-runtime:
+    name: Uninstall Runtime
+    needs: validate
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/terraform/environments/eval
+        run: |
+          terraform init \
+            -backend-config="prefix=eval/${ENV_ID}"
+
+      - name: Get cluster name from Terraform state
+        id: tf-cluster
+        working-directory: infra/terraform/environments/eval
+        continue-on-error: true
+        run: |
+          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null) || true
+          if [ -n "$CLUSTER_NAME" ]; then
+            echo "cluster_name=${CLUSTER_NAME}" >> "$GITHUB_OUTPUT"
+            echo "Cluster name: ${CLUSTER_NAME}"
+          else
+            echo "::warning::Could not read cluster name from Terraform state"
+          fi
+
+      - name: Get GKE credentials
+        if: steps.tf-cluster.outputs.cluster_name != ''
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ steps.tf-cluster.outputs.cluster_name }}
+          location: ${{ inputs.region }}
+          project_id: ${{ inputs.gcp_project_id }}
+
+      - name: Run teardown script
+        if: steps.tf-cluster.outputs.cluster_name != ''
+        run: |
+          bash infra/scripts/teardown.sh \
+            --namespace biznez \
+            --release biznez
+
+  # -------------------------------------------------------------------------
+  # Job 3: Destroy infrastructure via Terraform
+  # -------------------------------------------------------------------------
+  destroy-infrastructure:
+    name: Destroy Infrastructure
+    needs: uninstall-runtime
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra/terraform/environments/eval
+        run: |
+          terraform init \
+            -backend-config="prefix=eval/${ENV_ID}"
+
+      - name: Terraform destroy
+        working-directory: infra/terraform/environments/eval
+        continue-on-error: true
+        run: |
+          # Extract customer_name from env_id (everything before the last -xxxx suffix)
+          CUSTOMER_NAME="${ENV_ID%-????}"
+
+          terraform destroy -auto-approve \
+            -var="customer_name=${CUSTOMER_NAME}" \
+            -var="region=${REGION}" \
+            -var="project_id=${GCP_PROJECT_ID}"
+
+      - name: Write summary
+        if: always()
+        env:
+          UNINSTALL_RESULT: ${{ needs.uninstall-runtime.result }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Teardown: ${ENV_ID}
+
+          | Step | Status |
+          |------|--------|
+          | **Runtime uninstall** | ${UNINSTALL_RESULT} |
+          | **Infrastructure destroy** | ${{ job.status }} |
+
+          Environment \`${ENV_ID}\` teardown complete.
+          EOF

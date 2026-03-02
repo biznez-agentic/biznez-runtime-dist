@@ -1,0 +1,304 @@
+name: Provision Eval Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      customer_name:
+        description: 'Customer name (lowercase, alphanumeric + hyphens, 3-20 chars)'
+        required: true
+        type: string
+      region:
+        description: 'GCP region'
+        required: true
+        type: choice
+        options:
+          - europe-west2
+          - us-central1
+          - us-east1
+          - asia-southeast1
+      gcp_project_id:
+        description: 'GCP project ID'
+        required: false
+        type: string
+        default: 'mcpserver-469909'
+      allow_source_repo_fallback:
+        description: 'Allow fallback to sourceRepo if releaseRepo is empty (dev only)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  CUSTOMER_NAME: ${{ inputs.customer_name }}
+  REGION: ${{ inputs.region }}
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+  ALLOW_FALLBACK: ${{ inputs.allow_source_repo_fallback }}
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Validate inputs and generate env_id
+  # -------------------------------------------------------------------------
+  validate-inputs:
+    name: Validate Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      env_id: ${{ steps.gen.outputs.env_id }}
+      customer_name: ${{ steps.gen.outputs.customer_name }}
+    steps:
+      - name: Validate customer_name
+        run: |
+          if [[ ! "$CUSTOMER_NAME" =~ ^[a-z][a-z0-9-]{2,19}$ ]]; then
+            echo "::error::customer_name must match ^[a-z][a-z0-9-]{2,19}$"
+            exit 1
+          fi
+
+      - name: Generate env_id
+        id: gen
+        run: |
+          SUFFIX=$(head -c 256 /dev/urandom | tr -dc 'a-z0-9' | head -c 4)
+          ENV_ID="${CUSTOMER_NAME}-${SUFFIX}"
+          echo "env_id=${ENV_ID}" >> "$GITHUB_OUTPUT"
+          echo "customer_name=${CUSTOMER_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Generated env_id: ${ENV_ID}"
+
+  # -------------------------------------------------------------------------
+  # Job 2: Provision infrastructure via Terraform
+  # -------------------------------------------------------------------------
+  provision-infrastructure:
+    name: Provision Infrastructure
+    needs: validate-inputs
+    runs-on: ubuntu-latest
+    concurrency:
+      group: eval-${{ needs.validate-inputs.outputs.env_id }}
+      cancel-in-progress: false
+    outputs:
+      cluster_name: ${{ steps.tf-outputs.outputs.cluster_name }}
+      ar_url: ${{ steps.tf-outputs.outputs.ar_url }}
+      env_id: ${{ needs.validate-inputs.outputs.env_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Run preflight checks
+        run: |
+          bash infra/scripts/preflight-quotas.sh \
+            --project "$GCP_PROJECT_ID" \
+            --region "$REGION"
+
+      - name: Terraform init
+        working-directory: infra/terraform/environments/eval
+        env:
+          ENV_ID: ${{ needs.validate-inputs.outputs.env_id }}
+        run: |
+          terraform init \
+            -backend-config="prefix=eval/${ENV_ID}"
+
+      - name: Terraform plan
+        working-directory: infra/terraform/environments/eval
+        run: |
+          terraform plan \
+            -var="customer_name=${CUSTOMER_NAME}" \
+            -var="region=${REGION}" \
+            -var="project_id=${GCP_PROJECT_ID}" \
+            -out=tfplan
+
+      - name: Terraform apply
+        working-directory: infra/terraform/environments/eval
+        run: terraform apply tfplan
+
+      - name: Extract Terraform outputs
+        id: tf-outputs
+        working-directory: infra/terraform/environments/eval
+        run: |
+          echo "cluster_name=$(terraform output -raw cluster_name)" >> "$GITHUB_OUTPUT"
+          echo "ar_url=$(terraform output -raw ar_url)" >> "$GITHUB_OUTPUT"
+          echo "env_id=$(terraform output -raw env_id)" >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------------
+  # Job 3: Copy images and deploy runtime
+  # -------------------------------------------------------------------------
+  deploy-runtime:
+    name: Deploy Runtime
+    needs: [validate-inputs, provision-infrastructure]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: eval-${{ needs.validate-inputs.outputs.env_id }}
+      cancel-in-progress: false
+    outputs:
+      frontend_portfwd: ${{ steps.provision.outputs.frontend_portfwd }}
+      backend_portfwd: ${{ steps.provision.outputs.backend_portfwd }}
+      retrieval_cmd: ${{ steps.provision.outputs.retrieval_cmd }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ needs.provision-infrastructure.outputs.cluster_name }}
+          location: ${{ inputs.region }}
+          project_id: ${{ inputs.gcp_project_id }}
+
+      - name: Install crane
+        run: |
+          CRANE_VERSION="v0.20.2"
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar xzf - crane
+          chmod +x crane
+          sudo mv crane /usr/local/bin/
+          crane version
+
+      - name: Configure AR auth
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Validate and copy images
+        env:
+          AR_URL: ${{ needs.provision-infrastructure.outputs.ar_url }}
+        run: |
+          IMAGES_LOCK="helm/biznez-runtime/images.lock"
+
+          # Process each image entry from images.lock
+          while IFS= read -r name_line; do
+            NAME=$(echo "$name_line" | sed 's/.*name: *//' | tr -d '"' | xargs)
+            [ -z "$NAME" ] && continue
+
+            RELEASE_REPO=$(awk -v name="$NAME" '
+              /^  - name:/ { found = ($3 == name || $3 == "\"" name "\"") }
+              found && /^    releaseRepo:/ { gsub(/"/, "", $2); print $2; exit }
+            ' "$IMAGES_LOCK")
+
+            SOURCE_REPO=$(awk -v name="$NAME" '
+              /^  - name:/ { found = ($3 == name || $3 == "\"" name "\"") }
+              found && /^    sourceRepo:/ { gsub(/"/, "", $2); print $2; exit }
+            ' "$IMAGES_LOCK")
+
+            TAG=$(awk -v name="$NAME" '
+              /^  - name:/ { found = ($3 == name || $3 == "\"" name "\"") }
+              found && /^    tag:/ { gsub(/"/, "", $2); print $2; exit }
+            ' "$IMAGES_LOCK")
+
+            if [ -z "$TAG" ]; then
+              echo "::error::No tag found for image $NAME in images.lock"
+              exit 1
+            fi
+
+            # Determine source repo
+            SRC_REPO=""
+            if [ -n "$RELEASE_REPO" ]; then
+              SRC_REPO="$RELEASE_REPO"
+            elif [ "$ALLOW_FALLBACK" = "true" ] && [ -n "$SOURCE_REPO" ]; then
+              echo "::warning::Using sourceRepo fallback for $NAME (dev only)"
+              SRC_REPO="$SOURCE_REPO"
+            else
+              echo "::error::images.lock releaseRepo not configured for '$NAME'; cannot provision eval env."
+              echo "::error::Run 'biznez-cli build-release' to populate releaseRepo before provisioning."
+              exit 1
+            fi
+
+            echo "Copying ${SRC_REPO}/${NAME}:${TAG} → ${AR_URL}/${NAME}:${TAG}"
+            crane copy "${SRC_REPO}/${NAME}:${TAG}" "${AR_URL}/${NAME}:${TAG}"
+          done < <(grep "^  - name:" "$IMAGES_LOCK")
+
+          echo "All images copied to AR"
+
+      - name: Deploy runtime
+        id: provision
+        env:
+          AR_URL: ${{ needs.provision-infrastructure.outputs.ar_url }}
+        run: |
+          bash infra/scripts/provision.sh \
+            --namespace biznez \
+            --release biznez \
+            --values-file infra/values/eval-gke.yaml \
+            --chart-dir helm/biznez-runtime \
+            --ar-url "$AR_URL" \
+            --images-lock helm/biznez-runtime/images.lock
+
+  # -------------------------------------------------------------------------
+  # Job 4: Notify (always runs)
+  # -------------------------------------------------------------------------
+  notify:
+    name: Summary
+    needs: [validate-inputs, provision-infrastructure, deploy-runtime]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write job summary
+        env:
+          ENV_ID: ${{ needs.validate-inputs.outputs.env_id }}
+          CLUSTER_NAME: ${{ needs.provision-infrastructure.outputs.cluster_name }}
+          AR_URL: ${{ needs.provision-infrastructure.outputs.ar_url }}
+          NOTIFY_REGION: ${{ inputs.region }}
+          PROJECT_ID: ${{ inputs.gcp_project_id }}
+          INFRA_RESULT: ${{ needs.provision-infrastructure.result }}
+          DEPLOY_RESULT: ${{ needs.deploy-runtime.result }}
+          FRONTEND_PORTFWD: ${{ needs.deploy-runtime.outputs.frontend_portfwd }}
+          BACKEND_PORTFWD: ${{ needs.deploy-runtime.outputs.backend_portfwd }}
+          RETRIEVAL_CMD: ${{ needs.deploy-runtime.outputs.retrieval_cmd }}
+        run: |
+          if [ "$DEPLOY_RESULT" = "success" ]; then
+            STATUS="Success"
+          elif [ "$INFRA_RESULT" = "success" ]; then
+            STATUS="Infrastructure provisioned but deploy failed"
+          else
+            STATUS="Failed"
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Eval Environment Provisioning: ${STATUS}
+
+          | Property | Value |
+          |----------|-------|
+          | **Environment ID** | \`${ENV_ID}\` |
+          | **Cluster** | \`${CLUSTER_NAME}\` |
+          | **Region** | \`${NOTIFY_REGION}\` |
+          | **Project** | \`${PROJECT_ID}\` |
+          | **AR Registry** | \`${AR_URL}\` |
+
+          ### Access Instructions
+
+          1. Get GKE credentials:
+          \`\`\`bash
+          gcloud container clusters get-credentials ${CLUSTER_NAME} --region ${NOTIFY_REGION} --project ${PROJECT_ID}
+          \`\`\`
+
+          2. Port-forward services:
+          \`\`\`bash
+          ${FRONTEND_PORTFWD:-kubectl port-forward svc/biznez-frontend 8080:80 -n biznez}
+          ${BACKEND_PORTFWD:-kubectl port-forward svc/biznez-backend 8000:8000 -n biznez}
+          \`\`\`
+
+          3. Retrieve admin password:
+          \`\`\`bash
+          ${RETRIEVAL_CMD:-kubectl get secret biznez-eval-admin-creds -n biznez -o jsonpath='{.data.password}' | base64 -d}
+          \`\`\`
+
+          ### Teardown
+
+          To destroy this environment, run the **Teardown Eval Environment** workflow with:
+          - **env_id**: \`${ENV_ID}\`
+          - **region**: \`${NOTIFY_REGION}\`
+          - **confirm_destroy**: \`${ENV_ID}\`
+          EOF
