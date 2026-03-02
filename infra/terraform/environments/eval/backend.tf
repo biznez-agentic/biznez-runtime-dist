@@ -1,7 +1,8 @@
 terraform {
   backend "gcs" {
-    bucket = "biznez-terraform-state"
-    # prefix is set dynamically via -backend-config="prefix=eval/<env_id>"
-    # This ensures each environment has isolated state under eval/<env_id>
+    # Both bucket and prefix set via -backend-config at init time:
+    #   -backend-config="bucket=biznez-terraform-state-<project-id>"
+    #   -backend-config="prefix=eval/<env_id>"
+    # See infra/scripts/bootstrap-gcp.sh for bucket naming convention.
   }
 }
