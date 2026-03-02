@@ -1,0 +1,27 @@
+# Helm values for GKE eval environments (Phase 10.1)
+# global.imageRegistry and per-component image.repository/tag overrides
+# are set via --set at install time (not hardcoded here).
+
+global:
+  profile: eval
+
+backend:
+  config:
+    environment: development
+    logLevel: info
+  service:
+    type: ClusterIP
+
+frontend:
+  service:
+    type: ClusterIP
+    port: 80
+
+postgres:
+  enabled: true
+
+migration:
+  mode: auto
+
+auth:
+  mode: local
