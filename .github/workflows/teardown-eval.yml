@@ -92,6 +92,7 @@ jobs:
         working-directory: infra/terraform/environments/eval
         run: |
           terraform init \
+            -backend-config="bucket=biznez-terraform-state-${GCP_PROJECT_ID}" \
             -backend-config="prefix=eval/${ENV_ID}"
 
       - name: Get cluster name from Terraform state
@@ -149,6 +150,7 @@ jobs:
         working-directory: infra/terraform/environments/eval
         run: |
           terraform init \
+            -backend-config="bucket=biznez-terraform-state-${GCP_PROJECT_ID}" \
             -backend-config="prefix=eval/${ENV_ID}"
 
       - name: Terraform destroy
