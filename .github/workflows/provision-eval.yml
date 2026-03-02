@@ -17,10 +17,9 @@ on:
           - us-east1
           - asia-southeast1
       gcp_project_id:
-        description: 'GCP project ID'
+        description: 'GCP project ID (defaults to vars.GCP_PROJECT_ID)'
         required: false
         type: string
-        default: 'mcpserver-469909'
       allow_source_repo_fallback:
         description: 'Allow fallback to sourceRepo if releaseRepo is empty (dev only)'
         required: false
@@ -34,7 +33,7 @@ permissions:
 env:
   CUSTOMER_NAME: ${{ inputs.customer_name }}
   REGION: ${{ inputs.region }}
-  GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
   ALLOW_FALLBACK: ${{ inputs.allow_source_repo_fallback }}
 
 jobs:
@@ -159,7 +158,7 @@ jobs:
         with:
           cluster_name: ${{ needs.provision-infrastructure.outputs.cluster_name }}
           location: ${{ inputs.region }}
-          project_id: ${{ inputs.gcp_project_id }}
+          project_id: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
 
       - name: Install crane
         run: |
@@ -251,7 +250,7 @@ jobs:
           CLUSTER_NAME: ${{ needs.provision-infrastructure.outputs.cluster_name }}
           AR_URL: ${{ needs.provision-infrastructure.outputs.ar_url }}
           NOTIFY_REGION: ${{ inputs.region }}
-          PROJECT_ID: ${{ inputs.gcp_project_id }}
+          PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
           INFRA_RESULT: ${{ needs.provision-infrastructure.result }}
           DEPLOY_RESULT: ${{ needs.deploy-runtime.result }}
           FRONTEND_PORTFWD: ${{ needs.deploy-runtime.outputs.frontend_portfwd }}

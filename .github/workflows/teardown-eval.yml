@@ -17,10 +17,9 @@ on:
           - us-east1
           - asia-southeast1
       gcp_project_id:
-        description: 'GCP project ID'
+        description: 'GCP project ID (defaults to vars.GCP_PROJECT_ID)'
         required: false
         type: string
-        default: 'mcpserver-469909'
       confirm_destroy:
         description: 'Type the env_id to confirm destruction'
         required: true
@@ -33,7 +32,7 @@ permissions:
 env:
   ENV_ID: ${{ inputs.env_id }}
   REGION: ${{ inputs.region }}
-  GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
   CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
 
 concurrency:
@@ -114,7 +113,7 @@ jobs:
         with:
           cluster_name: ${{ steps.tf-cluster.outputs.cluster_name }}
           location: ${{ inputs.region }}
-          project_id: ${{ inputs.gcp_project_id }}
+          project_id: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
 
       - name: Run teardown script
         if: steps.tf-cluster.outputs.cluster_name != ''
