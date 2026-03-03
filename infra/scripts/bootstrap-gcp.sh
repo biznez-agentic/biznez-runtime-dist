@@ -202,6 +202,7 @@ PRINCIPAL_SET=""
 GITHUB_REPO_OWNER=""
 
 REQUIRED_APIS=(
+    "cloudresourcemanager.googleapis.com"
     "container.googleapis.com"
     "compute.googleapis.com"
     "artifactregistry.googleapis.com"
