@@ -191,10 +191,12 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" \
     --set global.imageRegistry="$AR_URL" \
     --set backend.image.repository=platform-api \
     --set backend.image.tag="$BACKEND_TAG" \
+    --set backend.existingSecret="${RELEASE}-backend-secrets" \
     --set frontend.image.repository=web-app \
     --set frontend.image.tag="$FRONTEND_TAG" \
     --set postgres.image.repository=postgres \
     --set postgres.image.tag="$POSTGRES_TAG" \
+    --set postgres.existingSecret="${RELEASE}-postgres-secrets" \
     --set gateway.image.repository=agentgateway \
     --set gateway.image.tag="$GATEWAY_TAG" \
     -n "$NAMESPACE" --wait --timeout 300s || {
