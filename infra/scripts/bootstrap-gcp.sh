@@ -216,6 +216,8 @@ SA_ROLES=(
     "roles/compute.admin"
     "roles/artifactregistry.admin"
     "roles/iam.serviceAccountAdmin"
+    "roles/iam.serviceAccountUser"
+    "roles/resourcemanager.projectIamAdmin"
     "roles/storage.objectAdmin"
     "roles/serviceusage.serviceUsageAdmin"
 )
