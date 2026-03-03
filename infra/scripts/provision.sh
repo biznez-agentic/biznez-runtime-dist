@@ -141,7 +141,7 @@ ok "Admin credentials stored in biznez-eval-admin-creds secret"
 # Step 4: Generate app secrets
 # ---------------------------------------------------------------------------
 info "Generating application secrets..."
-SECRETS_YAML=$("$CLI" generate-secrets --format yaml --no-docker-fernet -n "$NAMESPACE" 2>/dev/null) || {
+SECRETS_YAML=$("$CLI" -n "$NAMESPACE" generate-secrets --format yaml --no-docker-fernet 2>/dev/null) || {
     error "Failed to generate secrets via biznez-cli"
     exit "$EXIT_SECRET"
 }
