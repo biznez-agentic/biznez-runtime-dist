@@ -100,12 +100,14 @@ jobs:
         working-directory: infra/terraform/environments/eval
         continue-on-error: true
         run: |
+          # terraform output -raw can emit error-formatting chars on stdout
+          # when the output doesn't exist, so validate the value is clean
           CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null) || true
-          if [ -n "$CLUSTER_NAME" ]; then
+          if [ -n "$CLUSTER_NAME" ] && [[ "$CLUSTER_NAME" =~ ^[a-z][a-z0-9-]+$ ]]; then
             echo "cluster_name=${CLUSTER_NAME}" >> "$GITHUB_OUTPUT"
             echo "Cluster name: ${CLUSTER_NAME}"
           else
-            echo "::warning::Could not read cluster name from Terraform state"
+            echo "::warning::Could not read cluster name from Terraform state (got: '${CLUSTER_NAME}')"
           fi
 
       - name: Get GKE credentials
