@@ -149,6 +149,13 @@ echo "$SECRETS_YAML" | kubectl apply -f - -n "$NAMESPACE" >/dev/null || {
     error "Failed to apply secrets to namespace $NAMESPACE"
     exit "$EXIT_SECRET"
 }
+# Extract postgres password from the K8s secret for Helm (it needs it to build DATABASE_URL)
+PG_PASS=$(kubectl get secret "${RELEASE}-postgres-secrets" -n "$NAMESPACE" \
+    -o jsonpath='{.data.POSTGRES_PASSWORD}' 2>/dev/null | base64 -d) || true
+if [ -z "$PG_PASS" ]; then
+    error "Could not read POSTGRES_PASSWORD from ${RELEASE}-postgres-secrets"
+    exit "$EXIT_SECRET"
+fi
 unset SECRETS_YAML
 ok "Application secrets generated and applied"
 
@@ -197,12 +204,14 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" \
     --set postgres.image.repository=postgres \
     --set postgres.image.tag="$POSTGRES_TAG" \
     --set postgres.existingSecret="${RELEASE}-postgres-secrets" \
+    --set postgres.secrets.password="$PG_PASS" \
     --set gateway.image.repository=agentgateway \
     --set gateway.image.tag="$GATEWAY_TAG" \
     -n "$NAMESPACE" --wait --timeout 300s || {
     error "Helm install failed"
     exit "$EXIT_KUBE"
 }
+unset PG_PASS
 ok "Helm release $RELEASE installed"
 
 # ---------------------------------------------------------------------------
