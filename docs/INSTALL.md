@@ -2,6 +2,26 @@
 
 This guide covers installing the Biznez Agentic Runtime on Kubernetes (Helm) and Docker Compose. Choose the path that fits your environment.
 
+## GCP Eval Environment (Automated)
+
+For GCP-hosted eval environments, a one-command bootstrap sets up all prerequisites and a GitHub Actions workflow handles provisioning.
+
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/biznez-agentic/biznez-runtime-dist&cloudshell_tutorial=docs/BOOTSTRAP-CLOUDSHELL.md)
+
+Or run locally:
+
+```bash
+# Preview what will be created
+./infra/scripts/bootstrap-gcp.sh --project <your-project-id> --dry-run
+
+# Run the bootstrap
+./infra/scripts/bootstrap-gcp.sh --project <your-project-id>
+```
+
+After bootstrap, trigger the **Provision Eval Environment** workflow from GitHub Actions to create a GKE cluster and deploy the runtime.
+
+See [Bootstrap Cloud Shell Tutorial](BOOTSTRAP-CLOUDSHELL.md) for the guided walkthrough.
+
 ## Prerequisites
 
 | Tool | Version | Purpose |
