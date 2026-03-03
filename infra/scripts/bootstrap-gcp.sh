@@ -199,6 +199,7 @@ PROJECT_NUMBER=""
 POOL_RESOURCE=""
 PROVIDER_RESOURCE=""
 PRINCIPAL_SET=""
+GITHUB_REPO_OWNER=""
 
 REQUIRED_APIS=(
     "container.googleapis.com"
@@ -233,6 +234,7 @@ compute_resource_names() {
     POOL_RESOURCE="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}"
     PROVIDER_RESOURCE="${POOL_RESOURCE}/providers/${WIF_PROVIDER}"
     PRINCIPAL_SET="principalSet://iam.googleapis.com/${POOL_RESOURCE}/attribute.repository/${GITHUB_REPO}"
+    GITHUB_REPO_OWNER="${GITHUB_REPO%%/*}"
 }
 
 # =============================================================================
@@ -527,7 +529,7 @@ print_dry_run() {
     printf '\n'
 
     echo "# 4. Create WIF OIDC provider"
-    echo "  gcloud iam workload-identity-pools providers create-oidc $WIF_PROVIDER --workload-identity-pool=$WIF_POOL --location=global --project=$PROJECT_ID --issuer-uri=\"https://token.actions.githubusercontent.com\" --attribute-mapping=\"google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.actor=assertion.actor,attribute.ref=assertion.ref\" --display-name=\"GitHub Actions OIDC\""
+    echo "  gcloud iam workload-identity-pools providers create-oidc $WIF_PROVIDER --workload-identity-pool=$WIF_POOL --location=global --project=$PROJECT_ID --issuer-uri=\"https://token.actions.githubusercontent.com\" --attribute-mapping=\"google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.actor=assertion.actor,attribute.ref=assertion.ref\" --attribute-condition=\"assertion.repository_owner == '${GITHUB_REPO_OWNER}'\" --display-name=\"GitHub Actions OIDC\""
     printf '\n'
 
     echo "# 5. Create service account"
@@ -675,6 +677,7 @@ step_create_wif_provider() {
             --project="$PROJECT_ID" \
             --issuer-uri="https://token.actions.githubusercontent.com" \
             --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.actor=assertion.actor,attribute.ref=assertion.ref" \
+            --attribute-condition="assertion.repository_owner == '${GITHUB_REPO_OWNER}'" \
             --display-name="GitHub Actions OIDC" || {
             error "Failed to create WIF OIDC provider."
             error "You need roles/iam.workloadIdentityPoolAdmin on the project."
@@ -685,8 +688,8 @@ step_create_wif_provider() {
         info "WIF provider $WIF_PROVIDER already exists — skipping (not mutated)."
     fi
 
-    info "Provider is generic (accepts tokens from any GitHub repo)."
-    info "Authorization is enforced by the service account binding (principalSet)."
+    info "Provider scoped to org '${GITHUB_REPO_OWNER}' (attribute condition)."
+    info "Specific repo authorization is enforced by the SA binding (principalSet)."
     info "Without that binding, GitHub tokens CANNOT impersonate the SA."
 }
 
