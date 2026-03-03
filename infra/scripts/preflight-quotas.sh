@@ -83,6 +83,8 @@ info "Checking billing..."
 BILLING_ENABLED=$(gcloud billing projects describe "$PROJECT_ID" --format="value(billingEnabled)" 2>/dev/null) || true
 if [ "$BILLING_ENABLED" = "True" ]; then
     ok "Billing is active"
+elif [ -z "$BILLING_ENABLED" ]; then
+    warn "Cannot verify billing status (insufficient permissions). Skipping check."
 else
     error "Billing is not active for project $PROJECT_ID"
     error "  Fix: Link a billing account at https://console.cloud.google.com/billing"
