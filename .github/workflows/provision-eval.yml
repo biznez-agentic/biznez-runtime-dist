@@ -217,8 +217,8 @@ jobs:
               exit 1
             fi
 
-            echo "Copying ${SRC_REPO}/${NAME}:${TAG} → ${AR_URL}/${NAME}:${TAG}"
-            crane copy "${SRC_REPO}/${NAME}:${TAG}" "${AR_URL}/${NAME}:${TAG}"
+            echo "Copying ${SRC_REPO}:${TAG} → ${AR_URL}/${NAME}:${TAG}"
+            crane copy "${SRC_REPO}:${TAG}" "${AR_URL}/${NAME}:${TAG}"
           done < <(grep "^  - name:" "$IMAGES_LOCK")
 
           echo "All images copied to AR"
