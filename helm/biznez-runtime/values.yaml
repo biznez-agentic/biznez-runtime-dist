@@ -264,7 +264,11 @@ postgres:
     fsGroup: 999
   containerSecurityContext:
     runAsUser: 999
+    runAsGroup: 999
     readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+      add: ["CHOWN", "FOWNER"]
 
   # External database (used when postgres.enabled=false)
   external:
