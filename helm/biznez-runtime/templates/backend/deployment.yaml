@@ -45,6 +45,10 @@ spec:
           {{- end }}
           securityContext:
             {{- include "biznez.containerSecurityContext" (dict "root" . "component" .Values.backend) | nindent 12 }}
+          {{- with .Values.backend.waitForDb.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command:
             - sh
             - -c

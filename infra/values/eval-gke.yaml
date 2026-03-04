@@ -22,6 +22,10 @@ postgres:
 
 migration:
   mode: auto
+  command:
+    - sh
+    - -ceu
+    - python3 -u scripts/init_database_schema.py && alembic upgrade head
 
 auth:
   mode: local

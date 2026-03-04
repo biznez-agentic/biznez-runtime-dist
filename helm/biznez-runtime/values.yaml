@@ -135,6 +135,13 @@ backend:
   waitForDb:
     enabled: true   # Set false if init container is undesirable
     image: {}       # Defaults to postgres.image; override for external DB scenarios
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
 
   # Per-component security context overrides (merged with global defaults)
   podSecurityContext: {}
