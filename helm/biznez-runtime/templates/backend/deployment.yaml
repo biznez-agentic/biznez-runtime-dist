@@ -55,9 +55,10 @@ spec:
               DB_HOST="{{ required "postgres.external.host is required for wait-for-db when postgres.enabled=false" .Values.postgres.external.host }}"
               {{- end }}
               DB_PORT="{{ .Values.postgres.external.port | default "5432" }}"
-              echo "Waiting for database at ${DB_HOST}:${DB_PORT}..."
+              DB_USER="{{ .Values.postgres.secrets.user | default "biznez" }}"
+              echo "Waiting for database at ${DB_HOST}:${DB_PORT} (user: ${DB_USER})..."
               for i in $(seq 1 60); do
-                RESULT=$(pg_isready -h "$DB_HOST" -p "$DB_PORT" 2>&1) && {
+                RESULT=$(pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" 2>&1) && {
                   echo "Database is ready: ${RESULT}"
                   exit 0
                 }
@@ -65,9 +66,12 @@ spec:
                 sleep 5
               done
               echo "ERROR: Database not ready after 300s"
-              echo "Final pg_isready: $(pg_isready -h "$DB_HOST" -p "$DB_PORT" 2>&1)"
+              echo "Final pg_isready: $(pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" 2>&1)"
+              echo "TCP check: $(nc -zv "$DB_HOST" "$DB_PORT" 2>&1 || echo 'nc connect failed')"
               echo "DNS lookup: $(nslookup "$DB_HOST" 2>&1 || echo 'nslookup not available')"
               exit 1
+          volumeMounts:
+            {{- include "biznez.tmpVolumeMount" . | nindent 12 }}
         {{- end }}
         {{- if eq .Values.migration.mode "auto" }}
         - name: run-migrations
