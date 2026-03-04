@@ -186,6 +186,8 @@ frontend:
   config:
     # API backend URL (in-cluster default; overridden when ingress is enabled)
     apiUrl: ""
+    # WebSocket URL; auto-derived from apiUrl if empty (http→ws, https→wss)
+    wsUrl: ""
 
   # Service
   service:
