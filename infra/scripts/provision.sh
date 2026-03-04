@@ -260,7 +260,7 @@ wait_for_component "frontend" || exit "$EXIT_KUBE"
 # Step 8: Health check
 # ---------------------------------------------------------------------------
 info "Running health check..."
-"$CLI" health-check -r "$RELEASE" -n "$NAMESPACE" --timeout 120 || {
+"$CLI" -r "$RELEASE" -n "$NAMESPACE" health-check --timeout 120 || {
     error "Health check failed"
     exit "$EXIT_HEALTH"
 }
