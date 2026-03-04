@@ -56,9 +56,10 @@ spec:
               {{- end }}
               DB_PORT="{{ .Values.postgres.external.port | default "5432" }}"
               DB_USER="{{ .Values.postgres.secrets.user | default "biznez" }}"
-              echo "Waiting for database at ${DB_HOST}:${DB_PORT} (user: ${DB_USER})..."
+              DB_NAME="{{ .Values.postgres.database | default "biznez_platform" }}"
+              echo "Waiting for database at ${DB_HOST}:${DB_PORT} (user: ${DB_USER}, db: ${DB_NAME})..."
               for i in $(seq 1 60); do
-                RESULT=$(pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" 2>&1) && {
+                RESULT=$(pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" 2>&1) && {
                   echo "Database is ready: ${RESULT}"
                   exit 0
                 }
@@ -66,7 +67,7 @@ spec:
                 sleep 5
               done
               echo "ERROR: Database not ready after 300s"
-              echo "Final pg_isready: $(pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" 2>&1)"
+              echo "Final pg_isready: $(pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" 2>&1)"
               echo "TCP check: $(nc -zv "$DB_HOST" "$DB_PORT" 2>&1 || echo 'nc connect failed')"
               echo "DNS lookup: $(nslookup "$DB_HOST" 2>&1 || echo 'nslookup not available')"
               exit 1
