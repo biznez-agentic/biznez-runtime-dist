@@ -50,7 +50,7 @@ spec:
             - -c
             - |
               echo "Waiting for database to be ready..."
-              for i in $(seq 1 12); do
+              for i in $(seq 1 60); do
                 {{- if .Values.postgres.enabled }}
                 if pg_isready -h {{ include "biznez.fullname" . }}-postgres -p 5432 -q; then
                 {{- else }}
@@ -59,10 +59,10 @@ spec:
                   echo "Database is ready."
                   exit 0
                 fi
-                echo "Attempt $i/12: Database not ready, waiting 5s..."
+                echo "Attempt $i/60: Database not ready, waiting 5s..."
                 sleep 5
               done
-              echo "ERROR: Database not ready after 60s"
+              echo "ERROR: Database not ready after 300s"
               exit 1
         {{- end }}
         {{- if eq .Values.migration.mode "auto" }}
