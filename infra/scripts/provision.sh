@@ -207,7 +207,7 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" \
     --set postgres.secrets.password="$PG_PASS" \
     --set gateway.image.repository=agentgateway \
     --set gateway.image.tag="$GATEWAY_TAG" \
-    -n "$NAMESPACE" --wait --timeout 300s || {
+    -n "$NAMESPACE" --wait --timeout 600s || {
     error "Helm install failed"
     exit "$EXIT_KUBE"
 }
@@ -231,7 +231,7 @@ wait_for_component() {
         return 0
     fi
 
-    kubectl rollout status "deployment/$deploy_name" -n "$NAMESPACE" --timeout=300s || {
+    kubectl rollout status "deployment/$deploy_name" -n "$NAMESPACE" --timeout=600s || {
         error "Rollout failed for $component ($deploy_name)"
         return 1
     }
