@@ -208,7 +208,22 @@ helm upgrade --install "$RELEASE" "$CHART_DIR" \
     --set gateway.image.repository=agentgateway \
     --set gateway.image.tag="$GATEWAY_TAG" \
     -n "$NAMESPACE" --wait --timeout 600s || {
-    error "Helm install failed"
+    error "Helm install failed — collecting diagnostics..."
+    echo "--- Pod status ---"
+    kubectl get pods -n "$NAMESPACE" -o wide 2>/dev/null || true
+    echo "--- Backend pod describe ---"
+    BACKEND_POD=$(kubectl get pod -n "$NAMESPACE" \
+        -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=backend" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
+    if [ -n "${BACKEND_POD:-}" ]; then
+        kubectl describe pod "$BACKEND_POD" -n "$NAMESPACE" 2>/dev/null | tail -40 || true
+        echo "--- run-migrations logs ---"
+        kubectl logs "$BACKEND_POD" -c run-migrations -n "$NAMESPACE" --tail=200 2>/dev/null || true
+        echo "--- wait-for-db logs ---"
+        kubectl logs "$BACKEND_POD" -c wait-for-db -n "$NAMESPACE" --tail=200 2>/dev/null || true
+        echo "--- backend logs ---"
+        kubectl logs "$BACKEND_POD" -n "$NAMESPACE" --tail=200 2>/dev/null || true
+    fi
     exit "$EXIT_KUBE"
 }
 unset PG_PASS
