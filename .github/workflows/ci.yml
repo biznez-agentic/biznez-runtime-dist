@@ -36,15 +36,14 @@ jobs:
 
       - name: Install yq
         run: |
-          sudo wget -qO /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+          curl -fsSL -o /tmp/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+          sudo install /tmp/yq /usr/local/bin/yq
           yq --version
 
       - name: Install crane
         run: |
-          VERSION=$(curl -s https://api.github.com/repos/google/go-containerregistry/releases/latest | grep tag_name | cut -d '"' -f4)
-          curl -sL "https://github.com/google/go-containerregistry/releases/download/${VERSION}/go-containerregistry_Linux_x86_64.tar.gz" | \
+          curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz" | \
             sudo tar -xzf - -C /usr/local/bin crane
           crane version
 
