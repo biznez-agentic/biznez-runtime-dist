@@ -1,10 +1,10 @@
-variable "customer_name" {
-  description = "Customer name (alphanumeric + hyphens, 3-20 chars)"
+variable "env_id" {
+  description = "Environment identifier (customer_name-suffix, e.g., customer1-ab12)"
   type        = string
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{2,19}$", var.customer_name))
-    error_message = "customer_name must start with a lowercase letter, contain only lowercase letters, digits, and hyphens, and be 3-20 characters."
+    condition     = can(regex("^[a-z][a-z0-9-]{2,19}-[a-z0-9]{4}$", var.env_id))
+    error_message = "env_id must match ^[a-z][a-z0-9-]{2,19}-[a-z0-9]{4}$ (e.g., customer1-ab12)."
   }
 }
 

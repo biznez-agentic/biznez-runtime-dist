@@ -1,6 +1,6 @@
 output "env_id" {
   description = "Environment identifier (customer-xxxx)"
-  value       = local.env_id
+  value       = var.env_id
 }
 
 output "cluster_name" {
