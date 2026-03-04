@@ -49,20 +49,24 @@ spec:
             - sh
             - -c
             - |
-              echo "Waiting for database to be ready..."
+              {{- if .Values.postgres.enabled }}
+              DB_HOST="{{ include "biznez.fullname" . }}-postgres"
+              {{- else }}
+              DB_HOST="{{ required "postgres.external.host is required for wait-for-db when postgres.enabled=false" .Values.postgres.external.host }}"
+              {{- end }}
+              DB_PORT="{{ .Values.postgres.external.port | default "5432" }}"
+              echo "Waiting for database at ${DB_HOST}:${DB_PORT}..."
               for i in $(seq 1 60); do
-                {{- if .Values.postgres.enabled }}
-                if pg_isready -h {{ include "biznez.fullname" . }}-postgres -p 5432 -q; then
-                {{- else }}
-                if pg_isready -h {{ required "postgres.external.host is required for wait-for-db when postgres.enabled=false" .Values.postgres.external.host }} -p {{ .Values.postgres.external.port | default "5432" }} -q; then
-                {{- end }}
-                  echo "Database is ready."
+                RESULT=$(pg_isready -h "$DB_HOST" -p "$DB_PORT" 2>&1) && {
+                  echo "Database is ready: ${RESULT}"
                   exit 0
-                fi
-                echo "Attempt $i/60: Database not ready, waiting 5s..."
+                }
+                echo "Attempt $i/60: ${RESULT} -- waiting 5s..."
                 sleep 5
               done
               echo "ERROR: Database not ready after 300s"
+              echo "Final pg_isready: $(pg_isready -h "$DB_HOST" -p "$DB_PORT" 2>&1)"
+              echo "DNS lookup: $(nslookup "$DB_HOST" 2>&1 || echo 'nslookup not available')"
               exit 1
         {{- end }}
         {{- if eq .Values.migration.mode "auto" }}
