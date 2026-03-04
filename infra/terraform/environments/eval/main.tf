@@ -3,14 +3,9 @@
 # Composes: networking, gke-cluster, artifact-registry, iam
 # -----------------------------------------------------------------------------
 
-resource "random_string" "suffix" {
-  length  = 4
-  upper   = false
-  special = false
-}
-
 locals {
-  env_id = "${var.customer_name}-${random_string.suffix.result}"
+  env_id        = var.env_id
+  customer_name = replace(var.env_id, "/-[a-z0-9]{4}$/", "")
 }
 
 # Fetch project number for IAM bindings
@@ -25,7 +20,7 @@ module "networking" {
   source = "../../modules/networking"
 
   env_id        = local.env_id
-  customer_name = var.customer_name
+  customer_name = local.customer_name
   region        = var.region
   project_id    = var.project_id
 }
@@ -37,7 +32,7 @@ module "gke_cluster" {
   source = "../../modules/gke-cluster"
 
   env_id             = local.env_id
-  customer_name      = var.customer_name
+  customer_name      = local.customer_name
   region             = var.region
   project_id         = var.project_id
   network_id         = module.networking.network_id
@@ -53,7 +48,7 @@ module "artifact_registry" {
   source = "../../modules/artifact-registry"
 
   env_id        = local.env_id
-  customer_name = var.customer_name
+  customer_name = local.customer_name
   region        = var.region
   project_id    = var.project_id
 }
