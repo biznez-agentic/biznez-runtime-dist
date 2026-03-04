@@ -55,31 +55,40 @@ spec:
             exec:
               command:
                 - pg_isready
+                - -h
+                - "127.0.0.1"
                 - -U
                 - $(POSTGRES_USER)
                 - -d
                 - {{ .Values.postgres.database | default "biznez_platform" }}
-            initialDelaySeconds: 30
-            periodSeconds: 30
+            initialDelaySeconds: 60
+            periodSeconds: 20
             timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: 6
           readinessProbe:
             exec:
               command:
                 - pg_isready
+                - -h
+                - "127.0.0.1"
                 - -U
                 - $(POSTGRES_USER)
                 - -d
                 - {{ .Values.postgres.database | default "biznez_platform" }}
-            initialDelaySeconds: 5
+            initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 3
+            failureThreshold: 12
           resources:
             {{- toYaml .Values.postgres.resources | nindent 12 }}
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+      volumes:
+        - name: postgres-run
+          emptyDir: {}
       {{- with .Values.postgres.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
