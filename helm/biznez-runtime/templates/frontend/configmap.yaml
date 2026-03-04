@@ -8,5 +8,6 @@ metadata:
 data:
   env-config.js: |
     window.__ENV__ = {
-      API_BASE_URL: "{{ .Values.frontend.config.apiUrl | default (include "biznez.publicUrl.api" .) }}"
+      API_BASE_URL: {{ .Values.frontend.config.apiUrl | default (include "biznez.publicUrl.api" .) | toJson }},
+      WS_BASE_URL: {{ .Values.frontend.config.wsUrl | default "" | toJson }}
     };

@@ -112,9 +112,11 @@ jobs:
 
       - name: Terraform plan
         working-directory: infra/terraform/environments/eval
+        env:
+          ENV_ID: ${{ needs.validate-inputs.outputs.env_id }}
         run: |
           terraform plan \
-            -var="customer_name=${CUSTOMER_NAME}" \
+            -var="env_id=${ENV_ID}" \
             -var="region=${REGION}" \
             -var="project_id=${GCP_PROJECT_ID}" \
             -out=tfplan

@@ -159,11 +159,8 @@ jobs:
         working-directory: infra/terraform/environments/eval
         continue-on-error: true
         run: |
-          # Extract customer_name from env_id (everything before the last -xxxx suffix)
-          CUSTOMER_NAME="${ENV_ID%-????}"
-
           terraform destroy -auto-approve \
-            -var="customer_name=${CUSTOMER_NAME}" \
+            -var="env_id=${ENV_ID}" \
             -var="region=${REGION}" \
             -var="project_id=${GCP_PROJECT_ID}"
 
