@@ -95,19 +95,29 @@ jobs:
             -backend-config="bucket=biznez-terraform-state-${GCP_PROJECT_ID}" \
             -backend-config="prefix=eval/${ENV_ID}"
 
-      - name: Get cluster name from Terraform state
+      - name: Discover cluster name
         id: tf-cluster
         working-directory: infra/terraform/environments/eval
         continue-on-error: true
         run: |
-          # terraform output -raw can emit error-formatting chars on stdout
-          # when the output doesn't exist, so validate the value is clean
+          # Try Terraform state first
           CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null) || true
           if [ -n "$CLUSTER_NAME" ] && [[ "$CLUSTER_NAME" =~ ^[a-z][a-z0-9-]+$ ]]; then
             echo "cluster_name=${CLUSTER_NAME}" >> "$GITHUB_OUTPUT"
-            echo "Cluster name: ${CLUSTER_NAME}"
+            echo "Cluster name from Terraform state: ${CLUSTER_NAME}"
+            exit 0
+          fi
+
+          # Fallback: derive from naming convention
+          EXPECTED_NAME="biznez-eval-${ENV_ID}"
+          echo "Terraform state empty, checking for cluster by naming convention: ${EXPECTED_NAME}"
+          if gcloud container clusters describe "$EXPECTED_NAME" \
+               --region "$REGION" --project "$GCP_PROJECT_ID" \
+               --format="value(name)" &>/dev/null; then
+            echo "cluster_name=${EXPECTED_NAME}" >> "$GITHUB_OUTPUT"
+            echo "Cluster found via gcloud: ${EXPECTED_NAME}"
           else
-            echo "::warning::Could not read cluster name from Terraform state (got: '${CLUSTER_NAME}')"
+            echo "::warning::No cluster found in Terraform state or via gcloud (${EXPECTED_NAME})"
           fi
 
       - name: Get GKE credentials
@@ -156,6 +166,7 @@ jobs:
             -backend-config="prefix=eval/${ENV_ID}"
 
       - name: Terraform destroy
+        id: tf-destroy
         working-directory: infra/terraform/environments/eval
         continue-on-error: true
         run: |
@@ -164,18 +175,125 @@ jobs:
             -var="region=${REGION}" \
             -var="project_id=${GCP_PROJECT_ID}"
 
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Fallback — gcloud cleanup
+        id: gcloud-fallback
+        continue-on-error: true
+        run: |
+          # Resource naming convention: biznez-eval-{env_id}-{suffix}
+          PREFIX="biznez-eval-${ENV_ID}"
+          CLEANED=""
+
+          # Check if GKE cluster still exists
+          if gcloud container clusters describe "$PREFIX" \
+               --region "$REGION" --project "$GCP_PROJECT_ID" \
+               --format="value(name)" &>/dev/null; then
+            echo "::warning::Resources still exist after Terraform destroy — running gcloud fallback cleanup"
+
+            # 1. Delete GKE cluster (longest operation, blocks subnet/VPC deletion)
+            echo "Deleting GKE cluster: ${PREFIX}"
+            if gcloud container clusters delete "$PREFIX" \
+                 --region "$REGION" --project "$GCP_PROJECT_ID" \
+                 --quiet 2>&1; then
+              CLEANED="${CLEANED}cluster,"
+              echo "GKE cluster deleted"
+            else
+              echo "::warning::Failed to delete GKE cluster ${PREFIX}"
+            fi
+          else
+            echo "No GKE cluster found — Terraform destroy succeeded or cluster already gone"
+          fi
+
+          # 2. Delete Cloud NAT (must go before router)
+          if gcloud compute routers nats describe "${PREFIX}-nat" \
+               --router="${PREFIX}-router" --region="$REGION" \
+               --project="$GCP_PROJECT_ID" &>/dev/null; then
+            echo "Deleting Cloud NAT: ${PREFIX}-nat"
+            gcloud compute routers nats delete "${PREFIX}-nat" \
+              --router="${PREFIX}-router" --region="$REGION" \
+              --project="$GCP_PROJECT_ID" --quiet 2>&1 && CLEANED="${CLEANED}nat," || true
+          fi
+
+          # 3. Delete Cloud Router
+          if gcloud compute routers describe "${PREFIX}-router" \
+               --region="$REGION" --project="$GCP_PROJECT_ID" &>/dev/null; then
+            echo "Deleting Cloud Router: ${PREFIX}-router"
+            gcloud compute routers delete "${PREFIX}-router" \
+              --region="$REGION" --project="$GCP_PROJECT_ID" \
+              --quiet 2>&1 && CLEANED="${CLEANED}router," || true
+          fi
+
+          # 4. Delete subnet (must go before VPC)
+          if gcloud compute networks subnets describe "${PREFIX}-subnet" \
+               --region="$REGION" --project="$GCP_PROJECT_ID" &>/dev/null; then
+            echo "Deleting subnet: ${PREFIX}-subnet"
+            gcloud compute networks subnets delete "${PREFIX}-subnet" \
+              --region="$REGION" --project="$GCP_PROJECT_ID" \
+              --quiet 2>&1 && CLEANED="${CLEANED}subnet," || true
+          fi
+
+          # 5. Delete VPC
+          if gcloud compute networks describe "${PREFIX}-vpc" \
+               --project="$GCP_PROJECT_ID" &>/dev/null; then
+            echo "Deleting VPC: ${PREFIX}-vpc"
+            gcloud compute networks delete "${PREFIX}-vpc" \
+              --project="$GCP_PROJECT_ID" \
+              --quiet 2>&1 && CLEANED="${CLEANED}vpc," || true
+          fi
+
+          # 6. Delete Artifact Registry repo
+          if gcloud artifacts repositories describe "${PREFIX}-runtime" \
+               --location="$REGION" --project="$GCP_PROJECT_ID" &>/dev/null; then
+            echo "Deleting AR repo: ${PREFIX}-runtime"
+            gcloud artifacts repositories delete "${PREFIX}-runtime" \
+              --location="$REGION" --project="$GCP_PROJECT_ID" \
+              --quiet 2>&1 && CLEANED="${CLEANED}ar-repo," || true
+          fi
+
+          if [ -n "$CLEANED" ]; then
+            echo "gcloud_cleaned=${CLEANED%,}" >> "$GITHUB_OUTPUT"
+            echo "Fallback cleanup completed: ${CLEANED%,}"
+          else
+            echo "gcloud_cleaned=none" >> "$GITHUB_OUTPUT"
+            echo "No resources required fallback cleanup"
+          fi
+
+      - name: Clean up Terraform state
+        continue-on-error: true
+        run: |
+          STATE_BUCKET="biznez-terraform-state-${GCP_PROJECT_ID}"
+          STATE_PREFIX="eval/${ENV_ID}"
+          echo "Cleaning up Terraform state at gs://${STATE_BUCKET}/${STATE_PREFIX}/"
+          gsutil -m rm -r "gs://${STATE_BUCKET}/${STATE_PREFIX}/" 2>/dev/null || true
+
       - name: Write summary
         if: always()
         env:
           UNINSTALL_RESULT: ${{ needs.uninstall-runtime.result }}
+          GCLOUD_CLEANED: ${{ steps.gcloud-fallback.outputs.gcloud_cleaned }}
         run: |
+          TF_STATUS="${{ steps.tf-destroy.outcome }}"
+          FALLBACK_STATUS="${{ steps.gcloud-fallback.outcome }}"
+
+          if [ "$TF_STATUS" = "success" ] && [ "$GCLOUD_CLEANED" = "none" ]; then
+            STATUS="Terraform destroy succeeded"
+          elif [ -n "$GCLOUD_CLEANED" ] && [ "$GCLOUD_CLEANED" != "none" ]; then
+            STATUS="Cleaned up via gcloud fallback (${GCLOUD_CLEANED})"
+          else
+            STATUS="Completed (check logs for details)"
+          fi
+
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Teardown: ${ENV_ID}
 
           | Step | Status |
           |------|--------|
           | **Runtime uninstall** | ${UNINSTALL_RESULT} |
-          | **Infrastructure destroy** | ${{ job.status }} |
+          | **Terraform destroy** | ${TF_STATUS} |
+          | **gcloud fallback** | ${FALLBACK_STATUS} (${GCLOUD_CLEANED:-skipped}) |
+          | **Overall** | ${STATUS} |
 
           Environment \`${ENV_ID}\` teardown complete.
           EOF
