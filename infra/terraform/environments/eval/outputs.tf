@@ -28,3 +28,8 @@ output "project_id" {
   description = "GCP project ID"
   value       = var.project_id
 }
+
+output "ingress_ip" {
+  description = "Static IP for eval ingress"
+  value       = module.networking.ingress_ip
+}

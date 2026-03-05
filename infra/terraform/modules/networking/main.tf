@@ -51,6 +51,17 @@ resource "google_compute_router" "nat_router" {
   network = google_compute_network.eval_vpc.id
 }
 
+# -----------------------------------------------------------------------------
+# Static IP for eval ingress
+# -----------------------------------------------------------------------------
+resource "google_compute_address" "ingress_ip" {
+  name         = "${local.name_prefix}-ingress-ip"
+  project      = var.project_id
+  region       = var.region
+  address_type = "EXTERNAL"
+  description  = "Static IP for eval ingress (${var.env_id})"
+}
+
 resource "google_compute_router_nat" "nat_config" {
   name                               = "${local.name_prefix}-nat"
   project                            = var.project_id
