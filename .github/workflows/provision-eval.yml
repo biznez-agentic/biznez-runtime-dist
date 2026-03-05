@@ -135,7 +135,9 @@ jobs:
           echo "ar_url=$(terraform output -raw ar_url)" >> "$GITHUB_OUTPUT"
           echo "env_id=$(terraform output -raw env_id)" >> "$GITHUB_OUTPUT"
           echo "ingress_ip=$(terraform output -raw ingress_ip)" >> "$GITHUB_OUTPUT"
-          echo "cluster_endpoint=$(terraform output -raw cluster_endpoint)" >> "$GITHUB_OUTPUT"
+          CLUSTER_ENDPOINT_VAL=$(terraform output -raw cluster_endpoint)
+          echo "::add-mask::$CLUSTER_ENDPOINT_VAL"
+          echo "cluster_endpoint=$CLUSTER_ENDPOINT_VAL" >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------------
   # Job 3: Copy images and deploy runtime

@@ -383,7 +383,7 @@ rules:
     verbs: [create, get, update, patch, delete, list]
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [create, get, update, patch, delete, list]
+    verbs: [create, get, delete, list]
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [create, get, update, patch, delete, list]
@@ -414,7 +414,7 @@ RBAC_EOF
     # Generate token via TokenRequest API (deterministic, no polling)
     _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
     SA_TOKEN=$(kubectl create token biznez-runtime-deployer \
-        -n "$NAMESPACE" --duration=48h 2>/dev/null) || true
+        -n "$NAMESPACE" --duration=720h 2>/dev/null) || true
     if $_xtrace_was_on; then set -x; fi
 
     if [ -z "$SA_TOKEN" ]; then
@@ -480,7 +480,22 @@ if [ -n "$BACKEND_SVC" ]; then
             if [ -n "${INGRESS_HOST:-}" ]; then
                 API_URL="http://${INGRESS_HOST}"
                 info "Falling back to ingress URL: $API_URL"
+                # Verify fallback URL is reachable before proceeding
+                for j in $(seq 1 10); do
+                    if curl -sf "$API_URL/api/v1/health" >/dev/null 2>&1; then
+                        ok "Ingress fallback health check passed"
+                        break
+                    fi
+                    if [ "$j" -eq 10 ]; then
+                        warn "Ingress fallback also unreachable — bootstrap steps may be skipped"
+                        API_URL=""
+                    fi
+                    sleep 2
+                done
+            else
+                API_URL=""
             fi
+            break
         fi
         sleep 2
     done
