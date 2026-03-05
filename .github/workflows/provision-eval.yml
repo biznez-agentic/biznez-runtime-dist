@@ -239,6 +239,7 @@ jobs:
           AR_URL: ${{ needs.provision-infrastructure.outputs.ar_url }}
           INGRESS_IP: ${{ needs.provision-infrastructure.outputs.ingress_ip }}
           CLUSTER_ENDPOINT: ${{ needs.provision-infrastructure.outputs.cluster_endpoint }}
+          GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
         run: |
           bash infra/scripts/provision.sh \
             --namespace biznez \

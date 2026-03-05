@@ -593,11 +593,25 @@ d = json.load(sys.stdin)
 print(d.get('organization',{}).get('id','') or d.get('organization_id',''))
 " 2>/dev/null) || true
         if [ -n "$ORG_ID" ]; then
+            WS_BODY=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'name': 'Default Workspace',
+    'slug': 'default',
+    'description': 'Pre-configured eval workspace',
+    'organization_id': sys.argv[1],
+    'max_agents': 100,
+    'max_concurrent_executions': 10,
+    'max_storage_mb': 5120,
+    'is_public': False
+}))
+" "$ORG_ID")
             WS_HTTP=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' \
                 -X POST "$API_URL/api/v1/workspaces" \
                 -H "Authorization: Bearer $ACCESS_TOKEN" \
                 -H "Content-Type: application/json" \
-                -d "{\"name\":\"Default Workspace\",\"slug\":\"default\",\"description\":\"Pre-configured eval workspace\",\"organization_id\":\"$ORG_ID\",\"max_agents\":100,\"max_concurrent_executions\":10,\"max_storage_mb\":5120,\"is_public\":false}")
+                -d "$WS_BODY")
+            unset WS_BODY
             if [ "$WS_HTTP" = "201" ] || [ "$WS_HTTP" = "200" ]; then
                 ok "Default workspace created"
             elif [ "$WS_HTTP" = "409" ] || [ "$WS_HTTP" = "400" ]; then
@@ -710,9 +724,11 @@ if [ -n "${INGRESS_HOST:-}" ]; then
     done
 
     if $FE_OK && $BE_OK; then
+        INGRESS_VERIFIED=true
         ok "Ingress verified: frontend (/) and backend (/api/v1/health) both return 200"
     else
-        warn "Ingress partial: frontend=$FE_OK backend=$BE_OK"
+        INGRESS_VERIFIED=false
+        warn "Ingress partial: frontend=$FE_OK backend=$BE_OK — app_url will not be emitted"
     fi
 fi
 
@@ -725,7 +741,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "namespace=$NAMESPACE" >> "$GITHUB_OUTPUT"
     echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
 
-    if [ -n "${INGRESS_HOST:-}" ]; then
+    if [ -n "${INGRESS_HOST:-}" ] && [ "${INGRESS_VERIFIED:-false}" = "true" ]; then
         echo "app_url=http://${INGRESS_HOST}" >> "$GITHUB_OUTPUT"
     fi
     echo "admin_username=admin" >> "$GITHUB_OUTPUT"
