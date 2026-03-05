@@ -267,7 +267,15 @@ info "Running health check..."
 ok "Health check passed"
 
 # ---------------------------------------------------------------------------
-# Step 9: Output summary for GitHub Actions
+# Step 9: Seed reference data (plans, connector definitions)
+# ---------------------------------------------------------------------------
+info "Seeding reference data..."
+bash "${SCRIPT_DIR}/seed-eval-data.sh" --namespace "$NAMESPACE" --release "$RELEASE" || {
+    warn "Seed script failed (non-fatal -- data may need manual seeding)"
+}
+
+# ---------------------------------------------------------------------------
+# Step 10: Output summary for GitHub Actions
 # ---------------------------------------------------------------------------
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     info "Writing outputs for GitHub Actions..."
