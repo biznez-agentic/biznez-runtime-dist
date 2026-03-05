@@ -463,6 +463,9 @@ if [ -n "$BACKEND_SVC" ]; then
         EP_COUNT=$(kubectl get endpoints "$BACKEND_SVC" -n "$NAMESPACE" \
             -o jsonpath='{.subsets[0].addresses[*].ip}' 2>/dev/null | wc -w | tr -d ' ') || EP_COUNT=0
         [ "$EP_COUNT" -gt 0 ] && break
+        if [ "$i" -eq 10 ]; then
+            warn "Backend endpoints not ready after 20s — port-forward may fail"
+        fi
         sleep 2
     done
 
@@ -518,12 +521,18 @@ if [ -n "${API_URL:-}" ]; then
         -o jsonpath='{.data.password}' | base64 -d)
 
     # Try registration; 400 = already exists (idempotent)
-    # Use python3 json.dumps for safe JSON encoding (password may contain " or \)
+    # Pass password via stdin to avoid exposure in /proc/PID/cmdline
     _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
+    REGISTER_BODY=$(echo "$ADMIN_PASS" | python3 -c "
+import json, sys
+pw = sys.stdin.read().rstrip('\n')
+print(json.dumps({'username':'admin','email':'admin@eval.biznez.local','password':pw,'full_name':'Eval Admin'}))
+")
     REGISTER_HTTP=$(curl -s --max-time 30 -o /tmp/register-resp.json -w '%{http_code}' \
         -X POST "$API_URL/api/v1/auth/register" \
         -H "Content-Type: application/json" \
-        -d "$(python3 -c "import json,sys; print(json.dumps({'username':'admin','email':'admin@eval.biznez.local','password':sys.argv[1],'full_name':'Eval Admin'}))" "$ADMIN_PASS")")
+        -d "$REGISTER_BODY")
+    unset REGISTER_BODY
     if $_xtrace_was_on; then set -x; fi
 
     if [ "$REGISTER_HTTP" = "201" ]; then
@@ -532,9 +541,15 @@ if [ -n "${API_URL:-}" ]; then
     elif [ "$REGISTER_HTTP" = "400" ]; then
         info "Admin user already exists, logging in..."
         _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
+        LOGIN_BODY=$(echo "$ADMIN_PASS" | python3 -c "
+import json, sys
+pw = sys.stdin.read().rstrip('\n')
+print(json.dumps({'username':'admin','password':pw}))
+")
         LOGIN_RESP=$(curl -sf --max-time 30 -X POST "$API_URL/api/v1/auth/login" \
             -H "Content-Type: application/json" \
-            -d "$(python3 -c "import json,sys; print(json.dumps({'username':'admin','password':sys.argv[1]}))" "$ADMIN_PASS")" 2>/dev/null) || true
+            -d "$LOGIN_BODY" 2>/dev/null) || true
+        unset LOGIN_BODY
         if $_xtrace_was_on; then set -x; fi
         if [ -n "$LOGIN_RESP" ]; then
             ACCESS_TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null) || true
@@ -601,17 +616,19 @@ if [ -f /tmp/biznez-runtime-kubeconfig.yaml ] && [ -n "${ACCESS_TOKEN:-}" ]; the
     info "Registering GKE cluster as runtime..."
 
     # Check if runtime already exists (match by name AND endpoint)
+    # Pass CLUSTER_ENDPOINT via sys.argv to avoid shell interpolation in Python
     EXISTING_RT=$(curl -sf --max-time 30 "$API_URL/api/v1/runtimes" \
         -H "Authorization: Bearer $ACCESS_TOKEN" 2>/dev/null | \
         python3 -c "
 import sys, json
+target_endpoint = sys.argv[1]
 data = json.load(sys.stdin)
 items = data if isinstance(data, list) else data.get('items', data.get('runtimes', []))
 for rt in items:
-    if rt.get('name') == 'GKE Eval Cluster' and rt.get('endpoint') == '${CLUSTER_ENDPOINT}':
+    if rt.get('name') == 'GKE Eval Cluster' and rt.get('endpoint') == target_endpoint:
         print(rt['id'])
         break
-" 2>/dev/null) || true
+" "$CLUSTER_ENDPOINT" 2>/dev/null) || true
 
     if [ -n "$EXISTING_RT" ]; then
         ok "GKE runtime already registered (id=$EXISTING_RT)"
@@ -653,8 +670,9 @@ print(items[0]['id'] if items else '')
     fi
 fi
 
-# Cleanup sensitive temp files and port-forward
+# Cleanup sensitive temp files, tokens, and port-forward
 rm -f /tmp/biznez-runtime-kubeconfig.yaml
+unset ACCESS_TOKEN
 kill "$PF_PID" 2>/dev/null || true; PF_PID=""
 
 # ---------------------------------------------------------------------------
