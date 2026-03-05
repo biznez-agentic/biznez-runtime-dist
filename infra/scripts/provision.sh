@@ -518,11 +518,12 @@ if [ -n "${API_URL:-}" ]; then
         -o jsonpath='{.data.password}' | base64 -d)
 
     # Try registration; 400 = already exists (idempotent)
+    # Use python3 json.dumps for safe JSON encoding (password may contain " or \)
     _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
-    REGISTER_HTTP=$(curl -s -o /tmp/register-resp.json -w '%{http_code}' \
+    REGISTER_HTTP=$(curl -s --max-time 30 -o /tmp/register-resp.json -w '%{http_code}' \
         -X POST "$API_URL/api/v1/auth/register" \
         -H "Content-Type: application/json" \
-        -d "{\"username\":\"admin\",\"email\":\"admin@eval.biznez.local\",\"password\":\"$ADMIN_PASS\",\"full_name\":\"Eval Admin\"}")
+        -d "$(python3 -c "import json,sys; print(json.dumps({'username':'admin','email':'admin@eval.biznez.local','password':sys.argv[1],'full_name':'Eval Admin'}))" "$ADMIN_PASS")")
     if $_xtrace_was_on; then set -x; fi
 
     if [ "$REGISTER_HTTP" = "201" ]; then
@@ -531,9 +532,9 @@ if [ -n "${API_URL:-}" ]; then
     elif [ "$REGISTER_HTTP" = "400" ]; then
         info "Admin user already exists, logging in..."
         _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
-        LOGIN_RESP=$(curl -sf -X POST "$API_URL/api/v1/auth/login" \
+        LOGIN_RESP=$(curl -sf --max-time 30 -X POST "$API_URL/api/v1/auth/login" \
             -H "Content-Type: application/json" \
-            -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASS\"}" 2>/dev/null) || true
+            -d "$(python3 -c "import json,sys; print(json.dumps({'username':'admin','password':sys.argv[1]}))" "$ADMIN_PASS")" 2>/dev/null) || true
         if $_xtrace_was_on; then set -x; fi
         if [ -n "$LOGIN_RESP" ]; then
             ACCESS_TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])" 2>/dev/null) || true
@@ -568,7 +569,7 @@ fi
 # ---------------------------------------------------------------------------
 if [ -n "${ACCESS_TOKEN:-}" ]; then
     info "Creating default workspace..."
-    ME_RESP=$(curl -sf "$API_URL/api/v1/auth/me" \
+    ME_RESP=$(curl -sf --max-time 30 "$API_URL/api/v1/auth/me" \
         -H "Authorization: Bearer $ACCESS_TOKEN") || true
     if [ -n "$ME_RESP" ]; then
         ORG_ID=$(echo "$ME_RESP" | python3 -c "
@@ -577,7 +578,7 @@ d = json.load(sys.stdin)
 print(d.get('organization',{}).get('id','') or d.get('organization_id',''))
 " 2>/dev/null) || true
         if [ -n "$ORG_ID" ]; then
-            WS_HTTP=$(curl -s -o /dev/null -w '%{http_code}' \
+            WS_HTTP=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' \
                 -X POST "$API_URL/api/v1/workspaces" \
                 -H "Authorization: Bearer $ACCESS_TOKEN" \
                 -H "Content-Type: application/json" \
@@ -600,7 +601,7 @@ if [ -f /tmp/biznez-runtime-kubeconfig.yaml ] && [ -n "${ACCESS_TOKEN:-}" ]; the
     info "Registering GKE cluster as runtime..."
 
     # Check if runtime already exists (match by name AND endpoint)
-    EXISTING_RT=$(curl -sf "$API_URL/api/v1/runtimes" \
+    EXISTING_RT=$(curl -sf --max-time 30 "$API_URL/api/v1/runtimes" \
         -H "Authorization: Bearer $ACCESS_TOKEN" 2>/dev/null | \
         python3 -c "
 import sys, json
@@ -616,7 +617,7 @@ for rt in items:
         ok "GKE runtime already registered (id=$EXISTING_RT)"
     else
         # Get workspace ID
-        WS_ID=$(curl -sf "$API_URL/api/v1/workspaces" \
+        WS_ID=$(curl -sf --max-time 30 "$API_URL/api/v1/workspaces" \
             -H "Authorization: Bearer $ACCESS_TOKEN" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -627,7 +628,7 @@ print(items[0]['id'] if items else '')
         if [ -n "$WS_ID" ]; then
             _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
             KUBECONFIG_B64=$(python3 -c "import sys,base64; print(base64.b64encode(open('/tmp/biznez-runtime-kubeconfig.yaml','rb').read()).decode())")
-            RT_HTTP=$(curl -s -o /dev/null -w '%{http_code}' \
+            RT_HTTP=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' \
                 -X POST "$API_URL/api/v1/runtimes" \
                 -H "Authorization: Bearer $ACCESS_TOKEN" \
                 -H "Content-Type: application/json" \
