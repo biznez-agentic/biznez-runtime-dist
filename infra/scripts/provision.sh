@@ -643,20 +643,26 @@ print(items[0]['id'] if items else '')
 " 2>/dev/null) || true
 
         if [ -n "$WS_ID" ]; then
+            # Build JSON body via Python to avoid kubeconfig exposure in /proc/PID/cmdline
             _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
-            KUBECONFIG_B64=$(python3 -c "import sys,base64; print(base64.b64encode(open('/tmp/biznez-runtime-kubeconfig.yaml','rb').read()).decode())")
+            RT_BODY=$(python3 -c "
+import json, sys, base64
+kb64 = base64.b64encode(open('/tmp/biznez-runtime-kubeconfig.yaml','rb').read()).decode()
+print(json.dumps({
+    'name': 'GKE Eval Cluster',
+    'type': 'kubernetes',
+    'endpoint': sys.argv[1],
+    'credentials': {'kubeconfig_content': kb64},
+    'workspace_id': sys.argv[2],
+    'environment': 'development'
+}))
+" "$CLUSTER_ENDPOINT" "$WS_ID")
             RT_HTTP=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' \
                 -X POST "$API_URL/api/v1/runtimes" \
                 -H "Authorization: Bearer $ACCESS_TOKEN" \
                 -H "Content-Type: application/json" \
-                -d "{
-                    \"name\":\"GKE Eval Cluster\",
-                    \"type\":\"kubernetes\",
-                    \"endpoint\":\"${CLUSTER_ENDPOINT}\",
-                    \"credentials\":{\"kubeconfig_content\":\"${KUBECONFIG_B64}\"},
-                    \"workspace_id\":\"$WS_ID\",
-                    \"environment\":\"development\"
-                }")
+                -d "$RT_BODY")
+            unset RT_BODY
             if $_xtrace_was_on; then set -x; fi
 
             if [ "$RT_HTTP" = "201" ] || [ "$RT_HTTP" = "200" ]; then
