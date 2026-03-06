@@ -128,6 +128,20 @@ jobs:
           location: ${{ inputs.region }}
           project_id: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
 
+      - name: Clean up ingress and RBAC resources
+        if: steps.tf-cluster.outputs.cluster_name != ''
+        env:
+          NAMESPACE: biznez
+        run: |
+          # Uninstall nginx-ingress
+          helm uninstall ingress-nginx -n ingress-nginx 2>/dev/null || true
+          kubectl delete namespace ingress-nginx --ignore-not-found 2>/dev/null || true
+
+          # Delete runtime deployer resources (SA, ClusterRole, ClusterRoleBinding)
+          kubectl delete clusterrolebinding biznez-runtime-deployer --ignore-not-found 2>/dev/null || true
+          kubectl delete clusterrole biznez-runtime-deployer --ignore-not-found 2>/dev/null || true
+          kubectl delete serviceaccount biznez-runtime-deployer -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true
+
       - name: Run teardown script
         if: steps.tf-cluster.outputs.cluster_name != ''
         run: |
@@ -250,6 +264,15 @@ jobs:
             gcloud artifacts repositories delete "${PREFIX}-runtime" \
               --location="$REGION" --project="$GCP_PROJECT_ID" \
               --quiet 2>&1 && CLEANED="${CLEANED}ar-repo," || true
+          fi
+
+          # 7. Delete static IP
+          if gcloud compute addresses describe "${PREFIX}-ingress-ip" \
+               --region="$REGION" --project="$GCP_PROJECT_ID" &>/dev/null; then
+            echo "Deleting static IP: ${PREFIX}-ingress-ip"
+            gcloud compute addresses delete "${PREFIX}-ingress-ip" \
+              --region="$REGION" --project="$GCP_PROJECT_ID" \
+              --quiet 2>&1 && CLEANED="${CLEANED}static-ip," || true
           fi
 
           if [ -n "$CLEANED" ]; then

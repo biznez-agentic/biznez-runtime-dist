@@ -27,3 +27,8 @@ output "service_range_name" {
   description = "Name of the secondary IP range for services"
   value       = google_compute_subnetwork.eval_subnet.secondary_ip_range[1].range_name
 }
+
+output "ingress_ip" {
+  description = "Static external IP for ingress load balancer"
+  value       = google_compute_address.ingress_ip.address
+}

@@ -77,6 +77,8 @@ jobs:
       cluster_name: ${{ steps.tf-outputs.outputs.cluster_name }}
       ar_url: ${{ steps.tf-outputs.outputs.ar_url }}
       env_id: ${{ needs.validate-inputs.outputs.env_id }}
+      ingress_ip: ${{ steps.tf-outputs.outputs.ingress_ip }}
+      cluster_endpoint: ${{ steps.tf-outputs.outputs.cluster_endpoint }}
     steps:
       - uses: actions/checkout@v4
 
@@ -132,6 +134,10 @@ jobs:
           echo "cluster_name=$(terraform output -raw cluster_name)" >> "$GITHUB_OUTPUT"
           echo "ar_url=$(terraform output -raw ar_url)" >> "$GITHUB_OUTPUT"
           echo "env_id=$(terraform output -raw env_id)" >> "$GITHUB_OUTPUT"
+          echo "ingress_ip=$(terraform output -raw ingress_ip)" >> "$GITHUB_OUTPUT"
+          CLUSTER_ENDPOINT_VAL=$(terraform output -raw cluster_endpoint)
+          echo "::add-mask::$CLUSTER_ENDPOINT_VAL"
+          echo "cluster_endpoint=$CLUSTER_ENDPOINT_VAL" >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------------
   # Job 3: Copy images and deploy runtime
@@ -144,6 +150,8 @@ jobs:
       group: eval-${{ needs.validate-inputs.outputs.env_id }}
       cancel-in-progress: false
     outputs:
+      app_url: ${{ steps.provision.outputs.app_url }}
+      admin_username: ${{ steps.provision.outputs.admin_username }}
       frontend_portfwd: ${{ steps.provision.outputs.frontend_portfwd }}
       backend_portfwd: ${{ steps.provision.outputs.backend_portfwd }}
       retrieval_cmd: ${{ steps.provision.outputs.retrieval_cmd }}
@@ -229,6 +237,9 @@ jobs:
         id: provision
         env:
           AR_URL: ${{ needs.provision-infrastructure.outputs.ar_url }}
+          INGRESS_IP: ${{ needs.provision-infrastructure.outputs.ingress_ip }}
+          CLUSTER_ENDPOINT: ${{ needs.provision-infrastructure.outputs.cluster_endpoint }}
+          GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
         run: |
           bash infra/scripts/provision.sh \
             --namespace biznez \
@@ -236,7 +247,10 @@ jobs:
             --values-file infra/values/eval-gke.yaml \
             --chart-dir helm/biznez-runtime \
             --ar-url "$AR_URL" \
-            --images-lock helm/biznez-runtime/images.lock
+            --images-lock helm/biznez-runtime/images.lock \
+            --ingress-ip "$INGRESS_IP" \
+            --cluster-endpoint "$CLUSTER_ENDPOINT" \
+            --project-id "$GCP_PROJECT_ID"
 
   # -------------------------------------------------------------------------
   # Job 4: Notify (always runs)
@@ -256,6 +270,8 @@ jobs:
           PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
           INFRA_RESULT: ${{ needs.provision-infrastructure.result }}
           DEPLOY_RESULT: ${{ needs.deploy-runtime.result }}
+          APP_URL: ${{ needs.deploy-runtime.outputs.app_url }}
+          ADMIN_USERNAME: ${{ needs.deploy-runtime.outputs.admin_username }}
           FRONTEND_PORTFWD: ${{ needs.deploy-runtime.outputs.frontend_portfwd }}
           BACKEND_PORTFWD: ${{ needs.deploy-runtime.outputs.backend_portfwd }}
           RETRIEVAL_CMD: ${{ needs.deploy-runtime.outputs.retrieval_cmd }}
@@ -279,8 +295,30 @@ jobs:
           | **Project** | \`${PROJECT_ID}\` |
           | **AR Registry** | \`${AR_URL}\` |
 
-          ### Access Instructions
+          ### Access
 
+          EOF
+
+          if [ -n "$APP_URL" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          **Application URL:** ${APP_URL}
+
+          1. Open ${APP_URL} in your browser
+          2. Login with username: \`${ADMIN_USERNAME:-admin}\`
+          3. Retrieve admin password:
+          \`\`\`bash
+          gcloud container clusters get-credentials ${CLUSTER_NAME} --region ${NOTIFY_REGION} --project ${PROJECT_ID}
+          ${RETRIEVAL_CMD:-kubectl get secret biznez-eval-admin-creds -n biznez -o jsonpath='{.data.password}' | base64 -d}
+          \`\`\`
+
+          **Pre-configured:**
+          - Admin account (is_admin=true)
+          - Default workspace
+          - GKE runtime registered
+          - Seed data (plans, connectors)
+          EOF
+          else
+            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           1. Get GKE credentials:
           \`\`\`bash
           gcloud container clusters get-credentials ${CLUSTER_NAME} --region ${NOTIFY_REGION} --project ${PROJECT_ID}
@@ -296,6 +334,10 @@ jobs:
           \`\`\`bash
           ${RETRIEVAL_CMD:-kubectl get secret biznez-eval-admin-creds -n biznez -o jsonpath='{.data.password}' | base64 -d}
           \`\`\`
+          EOF
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
 
           ### Teardown
 
