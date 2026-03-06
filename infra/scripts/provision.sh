@@ -412,12 +412,13 @@ roleRef:
 RBAC_EOF
 
     # Generate token via TokenRequest API (deterministic, no polling)
+    # Suppress xtrace for entire block: token generation + kubeconfig write
     _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
     SA_TOKEN=$(kubectl create token biznez-runtime-deployer \
         -n "$NAMESPACE" --duration=720h 2>/dev/null) || true
-    if $_xtrace_was_on; then set -x; fi
 
     if [ -z "$SA_TOKEN" ]; then
+        if $_xtrace_was_on; then set -x; fi
         warn "Failed to generate SA token via TokenRequest API"
     else
         # Build kubeconfig — portable base64 (macOS base64 has no -w flag)
@@ -444,6 +445,7 @@ users:
       token: ${SA_TOKEN}
 KUBECONFIG_EOF
         chmod 600 /tmp/biznez-runtime-kubeconfig.yaml
+        if $_xtrace_was_on; then set -x; fi
         ok "Runtime deployer RBAC and kubeconfig ready"
     fi
     unset SA_TOKEN  # clear from env immediately
