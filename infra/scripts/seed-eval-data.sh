@@ -61,7 +61,7 @@ run_sql() {
 
 run_sql_block() {
     kubectl exec "$PG_POD" -n "$NAMESPACE" -i -- \
-        psql -U biznez -d biznez_platform 2>&1
+        psql -U biznez -d biznez_platform --set=ON_ERROR_STOP=1 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -214,8 +214,8 @@ for cid in openai anthropic gemini ollama; do
     fi
 done
 
-# Verify model pricing spot-checks
-for model_name in gpt-4o gpt-4o-mini; do
+# Verify all 7 model pricing rows
+for model_name in gpt-4o gpt-4o-mini gpt-4-turbo gpt-3.5-turbo o1 o1-mini o1-preview; do
     EXISTS=$(run_sql "SELECT model FROM model_pricing WHERE provider = 'openai' AND model = '$model_name';") || true
     EXISTS=$(echo "$EXISTS" | tr -d '[:space:]')
     if [ "$EXISTS" = "$model_name" ]; then

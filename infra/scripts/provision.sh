@@ -350,13 +350,19 @@ ok "Health check passed"
 # Step 9: Seed eval data
 # ---------------------------------------------------------------------------
 SEED_SCRIPT="${SCRIPT_DIR}/seed-eval-data.sh"
-if [ -x "$SEED_SCRIPT" ]; then
-    info "Seeding eval data..."
-    bash "$SEED_SCRIPT" --namespace "$NAMESPACE" --release "$RELEASE" || {
-        error "Seed data script failed"
-        exit "$EXIT_BOOTSTRAP"
-    }
+if [ ! -f "$SEED_SCRIPT" ]; then
+    error "Seed data script not found: $SEED_SCRIPT"
+    exit "$EXIT_BOOTSTRAP"
 fi
+if [ ! -x "$SEED_SCRIPT" ]; then
+    error "Seed data script not executable: $SEED_SCRIPT"
+    exit "$EXIT_BOOTSTRAP"
+fi
+info "Seeding eval data..."
+bash "$SEED_SCRIPT" --namespace "$NAMESPACE" --release "$RELEASE" || {
+    error "Seed data script failed"
+    exit "$EXIT_BOOTSTRAP"
+}
 
 # ---------------------------------------------------------------------------
 # Step 10: Create K8s ServiceAccount + custom ClusterRole
@@ -590,8 +596,12 @@ fi
 # ---------------------------------------------------------------------------
 # Step 13: Create default workspace
 # ---------------------------------------------------------------------------
+if [ -z "${API_URL:-}" ]; then
+    error "API URL not available — port-forward and ingress fallback both failed"
+    exit "$EXIT_BOOTSTRAP"
+fi
 if [ -z "${ACCESS_TOKEN:-}" ]; then
-    error "No access token — cannot create workspace (admin registration failed?)"
+    error "No access token — admin registration or login failed"
     exit "$EXIT_BOOTSTRAP"
 fi
 
