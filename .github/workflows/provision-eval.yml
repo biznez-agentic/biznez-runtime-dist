@@ -78,7 +78,6 @@ jobs:
       ar_url: ${{ steps.tf-outputs.outputs.ar_url }}
       env_id: ${{ needs.validate-inputs.outputs.env_id }}
       ingress_ip: ${{ steps.tf-outputs.outputs.ingress_ip }}
-      cluster_endpoint: ${{ steps.tf-outputs.outputs.cluster_endpoint }}
     steps:
       - uses: actions/checkout@v4
 
@@ -135,9 +134,6 @@ jobs:
           echo "ar_url=$(terraform output -raw ar_url)" >> "$GITHUB_OUTPUT"
           echo "env_id=$(terraform output -raw env_id)" >> "$GITHUB_OUTPUT"
           echo "ingress_ip=$(terraform output -raw ingress_ip)" >> "$GITHUB_OUTPUT"
-          CLUSTER_ENDPOINT_VAL=$(terraform output -raw cluster_endpoint)
-          echo "::add-mask::$CLUSTER_ENDPOINT_VAL"
-          echo "cluster_endpoint=$CLUSTER_ENDPOINT_VAL" >> "$GITHUB_OUTPUT"
 
   # -------------------------------------------------------------------------
   # Job 3: Copy images and deploy runtime
@@ -170,6 +166,13 @@ jobs:
           cluster_name: ${{ needs.provision-infrastructure.outputs.cluster_name }}
           location: ${{ inputs.region }}
           project_id: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
+
+      - name: Extract cluster endpoint
+        id: cluster-info
+        run: |
+          CLUSTER_ENDPOINT=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+          echo "::add-mask::$CLUSTER_ENDPOINT"
+          echo "cluster_endpoint=$CLUSTER_ENDPOINT" >> "$GITHUB_OUTPUT"
 
       - name: Install crane
         run: |
@@ -238,7 +241,7 @@ jobs:
         env:
           AR_URL: ${{ needs.provision-infrastructure.outputs.ar_url }}
           INGRESS_IP: ${{ needs.provision-infrastructure.outputs.ingress_ip }}
-          CLUSTER_ENDPOINT: ${{ needs.provision-infrastructure.outputs.cluster_endpoint }}
+          CLUSTER_ENDPOINT: ${{ steps.cluster-info.outputs.cluster_endpoint }}
           GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
         run: |
           bash infra/scripts/provision.sh \
