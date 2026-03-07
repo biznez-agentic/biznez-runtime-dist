@@ -56,7 +56,7 @@ info "Using Postgres pod: $PG_POD"
 # ---------------------------------------------------------------------------
 run_sql() {
     kubectl exec "$PG_POD" -n "$NAMESPACE" -- \
-        psql -U biznez -d biznez_platform -tA -c "$1" 2>&1
+        psql -U biznez -d biznez_platform -tA -c "$1"
 }
 
 run_sql_block() {
