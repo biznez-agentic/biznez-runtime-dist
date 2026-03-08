@@ -34,6 +34,7 @@ readonly EXIT_PREREQ=2
 readonly EXIT_KUBE=4
 readonly EXIT_SECRET=5
 readonly EXIT_HEALTH=6
+readonly EXIT_BOOTSTRAP=7
 
 # ---------------------------------------------------------------------------
 # Cleanup trap
@@ -349,12 +350,19 @@ ok "Health check passed"
 # Step 9: Seed eval data
 # ---------------------------------------------------------------------------
 SEED_SCRIPT="${SCRIPT_DIR}/seed-eval-data.sh"
-if [ -x "$SEED_SCRIPT" ]; then
-    info "Seeding eval data..."
-    bash "$SEED_SCRIPT" --namespace "$NAMESPACE" --release "$RELEASE" || {
-        warn "Seed data script failed (non-fatal)"
-    }
+if [ ! -f "$SEED_SCRIPT" ]; then
+    error "Seed data script not found: $SEED_SCRIPT"
+    exit "$EXIT_BOOTSTRAP"
 fi
+if [ ! -x "$SEED_SCRIPT" ]; then
+    error "Seed data script not executable: $SEED_SCRIPT"
+    exit "$EXIT_BOOTSTRAP"
+fi
+info "Seeding eval data..."
+bash "$SEED_SCRIPT" --namespace "$NAMESPACE" --release "$RELEASE" || {
+    error "Seed data script failed"
+    exit "$EXIT_BOOTSTRAP"
+}
 
 # ---------------------------------------------------------------------------
 # Step 10: Create K8s ServiceAccount + custom ClusterRole
@@ -528,7 +536,7 @@ if [ -n "${API_URL:-}" ]; then
     REGISTER_BODY=$(echo "$ADMIN_PASS" | python3 -c "
 import json, sys
 pw = sys.stdin.read().rstrip('\n')
-print(json.dumps({'username':'admin','email':'admin@eval.biznez.local','password':pw,'full_name':'Eval Admin'}))
+print(json.dumps({'username':'admin','email':'admin@eval.biznez.io','password':pw,'full_name':'Eval Admin'}))
 ")
     REGISTER_HTTP=$(curl -s --max-time 30 -o /tmp/register-resp.json -w '%{http_code}' \
         -X POST "$API_URL/api/v1/auth/register" \
@@ -558,7 +566,11 @@ print(json.dumps({'username':'admin','password':pw}))
             ok "Logged in as existing admin"
         fi
     else
-        warn "Admin registration returned HTTP $REGISTER_HTTP"
+        error "Admin registration returned HTTP $REGISTER_HTTP"
+        cat /tmp/register-resp.json 2>/dev/null || true
+        rm -f /tmp/register-resp.json
+        unset ADMIN_PASS
+        exit "$EXIT_BOOTSTRAP"
     fi
     rm -f /tmp/register-resp.json
     unset ADMIN_PASS
@@ -569,7 +581,7 @@ print(json.dumps({'username':'admin','password':pw}))
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
     if [ -n "$PG_POD" ]; then
         kubectl exec "$PG_POD" -n "$NAMESPACE" -- psql -U biznez -d biznez_platform -c \
-            "UPDATE users SET is_admin = true WHERE username = 'admin' OR email = 'admin@eval.biznez.local';" 2>&1 || true
+            "UPDATE users SET is_admin = true WHERE username = 'admin' OR email = 'admin@eval.biznez.io';" 2>&1 || true
         # Confirm promotion
         ADMIN_CHECK=$(kubectl exec "$PG_POD" -n "$NAMESPACE" -- psql -U biznez -d biznez_platform -tAc \
             "SELECT is_admin FROM users WHERE username = 'admin';" 2>/dev/null) || true
@@ -584,18 +596,34 @@ fi
 # ---------------------------------------------------------------------------
 # Step 13: Create default workspace
 # ---------------------------------------------------------------------------
-if [ -n "${ACCESS_TOKEN:-}" ]; then
-    info "Creating default workspace..."
-    ME_RESP=$(curl -sf --max-time 30 "$API_URL/api/v1/auth/me" \
-        -H "Authorization: Bearer $ACCESS_TOKEN") || true
-    if [ -n "$ME_RESP" ]; then
-        ORG_ID=$(echo "$ME_RESP" | python3 -c "
+if [ -z "${API_URL:-}" ]; then
+    error "API URL not available — port-forward and ingress fallback both failed"
+    exit "$EXIT_BOOTSTRAP"
+fi
+if [ -z "${ACCESS_TOKEN:-}" ]; then
+    error "No access token — admin registration or login failed"
+    exit "$EXIT_BOOTSTRAP"
+fi
+
+info "Creating default workspace..."
+ME_RESP=$(curl -sf --max-time 30 "$API_URL/api/v1/auth/me" \
+    -H "Authorization: Bearer $ACCESS_TOKEN") || true
+if [ -z "$ME_RESP" ]; then
+    error "Failed to fetch /auth/me — cannot determine organization ID"
+    exit "$EXIT_BOOTSTRAP"
+fi
+
+ORG_ID=$(echo "$ME_RESP" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 print(d.get('organization',{}).get('id','') or d.get('organization_id',''))
 " 2>/dev/null) || true
-        if [ -n "$ORG_ID" ]; then
-            WS_BODY=$(python3 -c "
+if [ -z "$ORG_ID" ]; then
+    error "Could not determine organization ID from /auth/me response"
+    exit "$EXIT_BOOTSTRAP"
+fi
+
+WS_BODY=$(python3 -c "
 import json, sys
 print(json.dumps({
     'name': 'Default Workspace',
@@ -608,22 +636,23 @@ print(json.dumps({
     'is_public': False
 }))
 " "$ORG_ID")
-            WS_HTTP=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' \
-                -X POST "$API_URL/api/v1/workspaces" \
-                -H "Authorization: Bearer $ACCESS_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "$WS_BODY")
-            unset WS_BODY
-            if [ "$WS_HTTP" = "201" ] || [ "$WS_HTTP" = "200" ]; then
-                ok "Default workspace created"
-            elif [ "$WS_HTTP" = "409" ] || [ "$WS_HTTP" = "400" ]; then
-                info "Default workspace already exists"
-            else
-                warn "Workspace creation returned HTTP $WS_HTTP"
-            fi
-        fi
-    fi
+WS_HTTP=$(curl -s --max-time 30 -o /tmp/ws-resp.json -w '%{http_code}' \
+    -X POST "$API_URL/api/v1/workspaces" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$WS_BODY")
+unset WS_BODY
+if [ "$WS_HTTP" = "201" ] || [ "$WS_HTTP" = "200" ]; then
+    ok "Default workspace created"
+elif [ "$WS_HTTP" = "409" ] || [ "$WS_HTTP" = "400" ]; then
+    info "Default workspace already exists"
+else
+    error "Workspace creation returned HTTP $WS_HTTP"
+    cat /tmp/ws-resp.json 2>/dev/null || true
+    rm -f /tmp/ws-resp.json
+    exit "$EXIT_BOOTSTRAP"
 fi
+rm -f /tmp/ws-resp.json
 
 # ---------------------------------------------------------------------------
 # Step 14: Register GKE runtime (idempotent)
@@ -658,10 +687,14 @@ items = data if isinstance(data, list) else data.get('items', data.get('workspac
 print(items[0]['id'] if items else '')
 " 2>/dev/null) || true
 
-        if [ -n "$WS_ID" ]; then
-            # Build JSON body via Python to avoid kubeconfig exposure in /proc/PID/cmdline
-            _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
-            RT_BODY=$(python3 -c "
+        if [ -z "$WS_ID" ]; then
+            error "Could not determine workspace ID — cannot register runtime"
+            exit "$EXIT_BOOTSTRAP"
+        fi
+
+        # Build JSON body via Python to avoid kubeconfig exposure in /proc/PID/cmdline
+        _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
+        RT_BODY=$(python3 -c "
 import json, sys, base64
 kb64 = base64.b64encode(open('/tmp/biznez-runtime-kubeconfig.yaml','rb').read()).decode()
 print(json.dumps({
@@ -673,22 +706,25 @@ print(json.dumps({
     'environment': 'development'
 }))
 " "$CLUSTER_ENDPOINT" "$WS_ID")
-            RT_HTTP=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' \
-                -X POST "$API_URL/api/v1/runtimes" \
-                -H "Authorization: Bearer $ACCESS_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "$RT_BODY")
-            unset RT_BODY
-            if $_xtrace_was_on; then set -x; fi
+        RT_HTTP=$(curl -s --max-time 30 -o /tmp/rt-resp.json -w '%{http_code}' \
+            -X POST "$API_URL/api/v1/runtimes" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$RT_BODY")
+        unset RT_BODY
+        if $_xtrace_was_on; then set -x; fi
 
-            if [ "$RT_HTTP" = "201" ] || [ "$RT_HTTP" = "200" ]; then
-                ok "GKE runtime registered"
-            elif [ "$RT_HTTP" = "409" ] || [ "$RT_HTTP" = "400" ]; then
-                info "Runtime may already exist (HTTP $RT_HTTP)"
-            else
-                warn "Runtime registration returned HTTP $RT_HTTP"
-            fi
+        if [ "$RT_HTTP" = "201" ] || [ "$RT_HTTP" = "200" ]; then
+            ok "GKE runtime registered"
+        elif [ "$RT_HTTP" = "409" ] || [ "$RT_HTTP" = "400" ]; then
+            info "Runtime may already exist (HTTP $RT_HTTP)"
+        else
+            error "Runtime registration returned HTTP $RT_HTTP"
+            cat /tmp/rt-resp.json 2>/dev/null || true
+            rm -f /tmp/rt-resp.json
+            exit "$EXIT_BOOTSTRAP"
         fi
+        rm -f /tmp/rt-resp.json
     fi
 fi
 
