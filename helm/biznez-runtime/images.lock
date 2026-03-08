@@ -24,7 +24,7 @@ images:
     sourceRepo: "europe-west2-docker.pkg.dev/mcpserver-469909/biznez-frontend/web-app"
     targetRepo: "biznez/web-app"
     releaseRepo: ""
-    tag: "dev-cddb5ec"
+    tag: "dev-e8f09d0"
     imageDigest: ""
     indexDigest: ""
   - name: agentgateway
