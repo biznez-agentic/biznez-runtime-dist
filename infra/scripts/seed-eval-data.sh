@@ -65,6 +65,53 @@ run_sql_block() {
 }
 
 # ---------------------------------------------------------------------------
+# Seed plans (required for user registration — org creation needs plan_id FK)
+# ---------------------------------------------------------------------------
+info "Seeding plans..."
+
+PLANS_SQL=$(cat <<'EOSQL'
+BEGIN;
+
+INSERT INTO plans (
+    id, name, display_name, description, price_monthly, price_yearly, currency,
+    max_organizations, max_agents_per_org, max_users_per_org, max_executions_per_month,
+    max_runtimes_per_org, max_connectors_per_org, max_storage_gb,
+    features, is_active, is_public, sort_order, created_at, updated_at
+) VALUES
+    ('free', 'free', 'Free',
+     'Get started with basic features. Perfect for individuals and small projects.',
+     0, 0, 'USD', 1, 3, 5, 1000, 1, 5, 1,
+     '{"basic_analytics": true, "community_support": true, "api_access": true, "custom_agents": false, "priority_support": false, "sso": false, "audit_logs": false}'::jsonb,
+     true, true, 1, NOW(), NOW()),
+    ('starter', 'starter', 'Starter',
+     'For growing teams. Increased limits and additional features.',
+     29, 290, 'USD', 1, 10, 10, 10000, 2, 10, 5,
+     '{"basic_analytics": true, "community_support": true, "api_access": true, "custom_agents": true, "priority_support": false, "sso": false, "audit_logs": true}'::jsonb,
+     true, true, 2, NOW(), NOW()),
+    ('pro', 'pro', 'Pro',
+     'For professional teams. Premium features and priority support.',
+     99, 990, 'USD', 3, 50, 25, 100000, 5, 25, 25,
+     '{"basic_analytics": true, "advanced_analytics": true, "community_support": true, "api_access": true, "custom_agents": true, "priority_support": true, "sso": true, "audit_logs": true}'::jsonb,
+     true, true, 3, NOW(), NOW()),
+    ('enterprise', 'enterprise', 'Enterprise',
+     'Custom solutions for large organizations. Unlimited resources and dedicated support.',
+     0, 0, 'USD', -1, -1, -1, -1, -1, -1, -1,
+     '{"basic_analytics": true, "advanced_analytics": true, "community_support": true, "api_access": true, "custom_agents": true, "priority_support": true, "sso": true, "audit_logs": true, "dedicated_support": true, "custom_integrations": true, "sla_guarantee": true}'::jsonb,
+     true, false, 4, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+COMMIT;
+EOSQL
+)
+
+info "Inserting 4 plans (free, starter, pro, enterprise)..."
+echo "$PLANS_SQL" | run_sql_block || {
+    error "Failed to insert plans"
+    exit 1
+}
+ok "Plans inserted"
+
+# ---------------------------------------------------------------------------
 # Seed connector definitions (4 LLM connectors, transaction-wrapped)
 # ---------------------------------------------------------------------------
 info "Seeding connector definitions..."
@@ -210,6 +257,18 @@ ok "Model pricing inserted"
 info "Verifying seed data..."
 ERRORS=0
 
+# Verify plan IDs
+for pid in free starter pro enterprise; do
+    EXISTS=$(run_sql "SELECT id FROM plans WHERE id = '$pid';") || true
+    EXISTS=$(echo "$EXISTS" | tr -d '[:space:]')
+    if [ "$EXISTS" = "$pid" ]; then
+        ok "Plan '$pid' exists"
+    else
+        error "FAIL: missing plan id '$pid'"
+        ERRORS=$((ERRORS + 1))
+    fi
+done
+
 # Verify connector IDs
 for cid in openai anthropic gemini ollama; do
     EXISTS=$(run_sql "SELECT id FROM connector_definitions WHERE id = '$cid';") || true
@@ -239,4 +298,4 @@ if [ "$ERRORS" -gt 0 ]; then
     exit 1
 fi
 
-ok "Eval seed data verified: 4 connectors, 7 pricing rows"
+ok "Eval seed data verified: 4 plans, 4 connectors, 7 pricing rows"
