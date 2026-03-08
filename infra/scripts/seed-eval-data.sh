@@ -85,7 +85,7 @@ INSERT INTO connector_definitions (
     NULL,
     NULL,
     'openai',
-    '[{"id": "gpt-4o", "name": "GPT-4o", "input_cost_per_1k": 0.005, "output_cost_per_1k": 0.015}, {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "input_cost_per_1k": 0.00015, "output_cost_per_1k": 0.0006}, {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "input_cost_per_1k": 0.01, "output_cost_per_1k": 0.03}, {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "input_cost_per_1k": 0.0005, "output_cost_per_1k": 0.0015}]'::jsonb,
+    '[{"id": "gpt-4o", "name": "GPT-4o", "input_cost_per_1k": 0.0025, "output_cost_per_1k": 0.01}, {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "input_cost_per_1k": 0.00015, "output_cost_per_1k": 0.0006}, {"id": "gpt-4-turbo", "name": "GPT-4 Turbo", "input_cost_per_1k": 0.01, "output_cost_per_1k": 0.03}, {"id": "gpt-3.5-turbo", "name": "GPT-3.5 Turbo", "input_cost_per_1k": 0.0005, "output_cost_per_1k": 0.0015}]'::jsonb,
     'gpt-4o-mini',
     '/icons/openai.svg',
     'https://platform.openai.com/docs',

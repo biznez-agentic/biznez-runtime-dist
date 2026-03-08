@@ -706,7 +706,7 @@ print(json.dumps({
     'environment': 'development'
 }))
 " "$CLUSTER_ENDPOINT" "$WS_ID")
-        RT_HTTP=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' \
+        RT_HTTP=$(curl -s --max-time 30 -o /tmp/rt-resp.json -w '%{http_code}' \
             -X POST "$API_URL/api/v1/runtimes" \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
             -H "Content-Type: application/json" \
@@ -720,8 +720,11 @@ print(json.dumps({
             info "Runtime may already exist (HTTP $RT_HTTP)"
         else
             error "Runtime registration returned HTTP $RT_HTTP"
+            cat /tmp/rt-resp.json 2>/dev/null || true
+            rm -f /tmp/rt-resp.json
             exit "$EXIT_BOOTSTRAP"
         fi
+        rm -f /tmp/rt-resp.json
     fi
 fi
 
