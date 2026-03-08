@@ -380,6 +380,11 @@ kind: ClusterRole
 metadata:
   name: biznez-runtime-deployer
 rules:
+  # Namespace management — cluster-wide scope is required because namespaces are
+  # cluster-scoped resources. The delete verb is needed for workspace teardown
+  # (base.py:309). Accepted trade-off for eval; production deployments should use
+  # label-based OPA/Gatekeeper policies to restrict deletion to biznez-managed
+  # namespaces (e.g. label: biznez.io/managed=true).
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [create, get, list, delete]
