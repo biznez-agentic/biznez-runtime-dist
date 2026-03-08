@@ -380,18 +380,29 @@ kind: ClusterRole
 metadata:
   name: biznez-runtime-deployer
 rules:
+  # Namespace management — cluster-wide scope is required because namespaces are
+  # cluster-scoped resources. The delete verb is needed for workspace teardown
+  # (base.py:309). Accepted trade-off for eval; production deployments should use
+  # label-based OPA/Gatekeeper policies to restrict deletion to biznez-managed
+  # namespaces (e.g. label: biznez.io/managed=true).
   - apiGroups: [""]
     resources: [namespaces]
-    verbs: [create, get, list]
+    verbs: [create, get, list, delete]
   - apiGroups: ["apps"]
     resources: [deployments]
     verbs: [create, get, update, patch, delete, list, watch]
+  - apiGroups: ["apps"]
+    resources: [deployments/status]
+    verbs: [get]
   - apiGroups: [""]
     resources: [services]
     verbs: [create, get, update, patch, delete, list]
   - apiGroups: [""]
+    resources: [services/status]
+    verbs: [get]
+  - apiGroups: [""]
     resources: [secrets]
-    verbs: [create, get, delete, list]
+    verbs: [create, get, update, delete, list]
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [create, get, update, patch, delete, list]
@@ -401,9 +412,15 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list]
   - apiGroups: ["networking.k8s.io"]
     resources: [ingresses]
     verbs: [create, get, update, patch, delete, list]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses/status]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
