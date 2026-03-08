@@ -65,6 +65,53 @@ run_sql_block() {
 }
 
 # ---------------------------------------------------------------------------
+# Seed plans (required for user registration — org creation needs plan_id FK)
+# ---------------------------------------------------------------------------
+info "Seeding plans..."
+
+PLANS_SQL=$(cat <<'EOSQL'
+BEGIN;
+
+INSERT INTO plans (
+    id, name, display_name, description, price_monthly, price_yearly, currency,
+    max_organizations, max_agents_per_org, max_users_per_org, max_executions_per_month,
+    max_runtimes_per_org, max_connectors_per_org, max_storage_gb,
+    features, is_active, is_public, sort_order, created_at, updated_at
+) VALUES
+    ('free', 'free', 'Free',
+     'Get started with basic features. Perfect for individuals and small projects.',
+     0, 0, 'USD', 1, 3, 5, 1000, 1, 5, 1,
+     '{"basic_analytics": true, "community_support": true, "api_access": true, "custom_agents": false, "priority_support": false, "sso": false, "audit_logs": false}'::jsonb,
+     true, true, 1, NOW(), NOW()),
+    ('starter', 'starter', 'Starter',
+     'For growing teams. Increased limits and additional features.',
+     29, 290, 'USD', 1, 10, 10, 10000, 2, 10, 5,
+     '{"basic_analytics": true, "community_support": true, "api_access": true, "custom_agents": true, "priority_support": false, "sso": false, "audit_logs": true}'::jsonb,
+     true, true, 2, NOW(), NOW()),
+    ('pro', 'pro', 'Pro',
+     'For professional teams. Premium features and priority support.',
+     99, 990, 'USD', 3, 50, 25, 100000, 5, 25, 25,
+     '{"basic_analytics": true, "advanced_analytics": true, "community_support": true, "api_access": true, "custom_agents": true, "priority_support": true, "sso": true, "audit_logs": true}'::jsonb,
+     true, true, 3, NOW(), NOW()),
+    ('enterprise', 'enterprise', 'Enterprise',
+     'Custom solutions for large organizations. Unlimited resources and dedicated support.',
+     0, 0, 'USD', -1, -1, -1, -1, -1, -1, -1,
+     '{"basic_analytics": true, "advanced_analytics": true, "community_support": true, "api_access": true, "custom_agents": true, "priority_support": true, "sso": true, "audit_logs": true, "dedicated_support": true, "custom_integrations": true, "sla_guarantee": true}'::jsonb,
+     true, false, 4, NOW(), NOW())
+ON CONFLICT (id) DO NOTHING;
+
+COMMIT;
+EOSQL
+)
+
+info "Inserting 4 plans (free, starter, pro, enterprise)..."
+echo "$PLANS_SQL" | run_sql_block || {
+    error "Failed to insert plans"
+    exit 1
+}
+ok "Plans inserted"
+
+# ---------------------------------------------------------------------------
 # Seed connector definitions (4 LLM connectors, transaction-wrapped)
 # ---------------------------------------------------------------------------
 info "Seeding connector definitions..."
@@ -75,7 +122,8 @@ BEGIN;
 -- Connector: openai
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'openai',
     'OpenAI',
@@ -89,13 +137,15 @@ INSERT INTO connector_definitions (
     'gpt-4o-mini',
     '/icons/openai.svg',
     'https://platform.openai.com/docs',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Connector: anthropic
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'anthropic',
     'Anthropic Claude',
@@ -109,13 +159,15 @@ INSERT INTO connector_definitions (
     'claude-sonnet-4-5-20250929',
     '/icons/anthropic.svg',
     'https://docs.anthropic.com/',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Connector: gemini
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'gemini',
     'Google Gemini',
@@ -129,13 +181,15 @@ INSERT INTO connector_definitions (
     'gemini-2.5-flash',
     '/icons/gemini.svg',
     'https://ai.google.dev/gemini-api/docs',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Connector: ollama
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'ollama',
     'Ollama',
@@ -149,7 +203,8 @@ INSERT INTO connector_definitions (
     'llama3.2',
     '/icons/ollama.svg',
     'https://ollama.com',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 COMMIT;
@@ -174,15 +229,15 @@ BEGIN;
 INSERT INTO model_pricing (
     id, provider, model, input_price_per_million, output_price_per_million,
     cache_read_price_per_million, cache_write_price_per_million,
-    effective_date, is_active
+    effective_date, is_active, created_at, updated_at
 ) VALUES
-    ('mp_gpt4o',       'openai', 'gpt-4o',         2.50,  10.00, 1.25,  2.50,  '2025-01-01', true),
-    ('mp_gpt4o_mini',  'openai', 'gpt-4o-mini',    0.15,   0.60, 0.075, 0.15,  '2025-01-01', true),
-    ('mp_gpt4_turbo',  'openai', 'gpt-4-turbo',   10.00,  30.00, 5.00,  10.00, '2025-01-01', true),
-    ('mp_gpt35_turbo', 'openai', 'gpt-3.5-turbo',  0.50,   1.50, 0.25,  0.50,  '2025-01-01', true),
-    ('mp_o1',          'openai', 'o1',             15.00,  60.00, 7.50,  15.00, '2025-01-01', true),
-    ('mp_o1_mini',     'openai', 'o1-mini',         3.00,  12.00, 1.50,  3.00,  '2025-01-01', true),
-    ('mp_o1_preview',  'openai', 'o1-preview',     15.00,  60.00, 7.50,  15.00, '2025-01-01', true)
+    ('mp_gpt4o',       'openai', 'gpt-4o',         2.50,  10.00, 1.25,  2.50,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_gpt4o_mini',  'openai', 'gpt-4o-mini',    0.15,   0.60, 0.075, 0.15,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_gpt4_turbo',  'openai', 'gpt-4-turbo',   10.00,  30.00, 5.00,  10.00, '2025-01-01', true, NOW(), NOW()),
+    ('mp_gpt35_turbo', 'openai', 'gpt-3.5-turbo',  0.50,   1.50, 0.25,  0.50,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_o1',          'openai', 'o1',             15.00,  60.00, 7.50,  15.00, '2025-01-01', true, NOW(), NOW()),
+    ('mp_o1_mini',     'openai', 'o1-mini',         3.00,  12.00, 1.50,  3.00,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_o1_preview',  'openai', 'o1-preview',     15.00,  60.00, 7.50,  15.00, '2025-01-01', true, NOW(), NOW())
 ON CONFLICT (id) DO NOTHING;
 
 COMMIT;
@@ -201,6 +256,18 @@ ok "Model pricing inserted"
 # ---------------------------------------------------------------------------
 info "Verifying seed data..."
 ERRORS=0
+
+# Verify plan IDs
+for pid in free starter pro enterprise; do
+    EXISTS=$(run_sql "SELECT id FROM plans WHERE id = '$pid';") || true
+    EXISTS=$(echo "$EXISTS" | tr -d '[:space:]')
+    if [ "$EXISTS" = "$pid" ]; then
+        ok "Plan '$pid' exists"
+    else
+        error "FAIL: missing plan id '$pid'"
+        ERRORS=$((ERRORS + 1))
+    fi
+done
 
 # Verify connector IDs
 for cid in openai anthropic gemini ollama; do
@@ -231,4 +298,4 @@ if [ "$ERRORS" -gt 0 ]; then
     exit 1
 fi
 
-ok "Eval seed data verified: 4 connectors, 7 pricing rows"
+ok "Eval seed data verified: 4 plans, 4 connectors, 7 pricing rows"
