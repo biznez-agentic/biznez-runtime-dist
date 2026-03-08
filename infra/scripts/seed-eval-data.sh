@@ -75,7 +75,8 @@ BEGIN;
 -- Connector: openai
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'openai',
     'OpenAI',
@@ -89,13 +90,15 @@ INSERT INTO connector_definitions (
     'gpt-4o-mini',
     '/icons/openai.svg',
     'https://platform.openai.com/docs',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Connector: anthropic
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'anthropic',
     'Anthropic Claude',
@@ -109,13 +112,15 @@ INSERT INTO connector_definitions (
     'claude-sonnet-4-5-20250929',
     '/icons/anthropic.svg',
     'https://docs.anthropic.com/',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Connector: gemini
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'gemini',
     'Google Gemini',
@@ -129,13 +134,15 @@ INSERT INTO connector_definitions (
     'gemini-2.5-flash',
     '/icons/gemini.svg',
     'https://ai.google.dev/gemini-api/docs',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Connector: ollama
 INSERT INTO connector_definitions (
     id, name, description, category, auth_type, auth_config, service_endpoints,
-    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active
+    llm_provider, llm_models, llm_default_model, icon_url, documentation_url, is_active,
+    created_at, updated_at
 ) VALUES (
     'ollama',
     'Ollama',
@@ -149,7 +156,8 @@ INSERT INTO connector_definitions (
     'llama3.2',
     '/icons/ollama.svg',
     'https://ollama.com',
-    true
+    true,
+    NOW(), NOW()
 ) ON CONFLICT (id) DO NOTHING;
 
 COMMIT;
@@ -174,15 +182,15 @@ BEGIN;
 INSERT INTO model_pricing (
     id, provider, model, input_price_per_million, output_price_per_million,
     cache_read_price_per_million, cache_write_price_per_million,
-    effective_date, is_active
+    effective_date, is_active, created_at, updated_at
 ) VALUES
-    ('mp_gpt4o',       'openai', 'gpt-4o',         2.50,  10.00, 1.25,  2.50,  '2025-01-01', true),
-    ('mp_gpt4o_mini',  'openai', 'gpt-4o-mini',    0.15,   0.60, 0.075, 0.15,  '2025-01-01', true),
-    ('mp_gpt4_turbo',  'openai', 'gpt-4-turbo',   10.00,  30.00, 5.00,  10.00, '2025-01-01', true),
-    ('mp_gpt35_turbo', 'openai', 'gpt-3.5-turbo',  0.50,   1.50, 0.25,  0.50,  '2025-01-01', true),
-    ('mp_o1',          'openai', 'o1',             15.00,  60.00, 7.50,  15.00, '2025-01-01', true),
-    ('mp_o1_mini',     'openai', 'o1-mini',         3.00,  12.00, 1.50,  3.00,  '2025-01-01', true),
-    ('mp_o1_preview',  'openai', 'o1-preview',     15.00,  60.00, 7.50,  15.00, '2025-01-01', true)
+    ('mp_gpt4o',       'openai', 'gpt-4o',         2.50,  10.00, 1.25,  2.50,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_gpt4o_mini',  'openai', 'gpt-4o-mini',    0.15,   0.60, 0.075, 0.15,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_gpt4_turbo',  'openai', 'gpt-4-turbo',   10.00,  30.00, 5.00,  10.00, '2025-01-01', true, NOW(), NOW()),
+    ('mp_gpt35_turbo', 'openai', 'gpt-3.5-turbo',  0.50,   1.50, 0.25,  0.50,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_o1',          'openai', 'o1',             15.00,  60.00, 7.50,  15.00, '2025-01-01', true, NOW(), NOW()),
+    ('mp_o1_mini',     'openai', 'o1-mini',         3.00,  12.00, 1.50,  3.00,  '2025-01-01', true, NOW(), NOW()),
+    ('mp_o1_preview',  'openai', 'o1-preview',     15.00,  60.00, 7.50,  15.00, '2025-01-01', true, NOW(), NOW())
 ON CONFLICT (id) DO NOTHING;
 
 COMMIT;
