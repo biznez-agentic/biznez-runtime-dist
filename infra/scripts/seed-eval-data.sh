@@ -183,7 +183,7 @@ INSERT INTO model_pricing (
     ('mp_o1',          'openai', 'o1',             15.00,  60.00, 7.50,  15.00, '2025-01-01', true),
     ('mp_o1_mini',     'openai', 'o1-mini',         3.00,  12.00, 1.50,  3.00,  '2025-01-01', true),
     ('mp_o1_preview',  'openai', 'o1-preview',     15.00,  60.00, 7.50,  15.00, '2025-01-01', true)
-ON CONFLICT (provider, model, effective_date) DO NOTHING;
+ON CONFLICT (id) DO NOTHING;
 
 COMMIT;
 EOSQL
