@@ -25,6 +25,24 @@ spec:
       {{- end }}
       securityContext:
         {{- include "biznez.podSecurityContext" (dict "root" . "component" .Values.frontend) | nindent 8 }}
+      initContainers:
+        - name: copy-nginx-config
+          image: {{ include "biznez.imageRef" (dict "root" . "image" .Values.frontend.image) }}
+          imagePullPolicy: {{ include "biznez.imagePullPolicy" (dict "root" . "image" .Values.frontend.image) }}
+          command:
+            - sh
+            - -c
+            - cp -rp /etc/nginx/. /nginx-config/
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /nginx-config
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: frontend
           image: {{ include "biznez.imageRef" (dict "root" . "image" .Values.frontend.image) }}
@@ -47,6 +65,8 @@ spec:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
           volumeMounts:
             {{- include "biznez.tmpVolumeMount" . | nindent 12 }}
+            - name: nginx-config
+              mountPath: /etc/nginx
             - name: nginx-cache
               mountPath: /var/cache/nginx
             - name: nginx-run
@@ -60,6 +80,8 @@ spec:
             {{- end }}
       volumes:
         {{- include "biznez.tmpVolume" . | nindent 8 }}
+        - name: nginx-config
+          emptyDir: {}
         - name: nginx-cache
           emptyDir: {}
         - name: nginx-run
