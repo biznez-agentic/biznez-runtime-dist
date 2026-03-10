@@ -745,6 +745,28 @@ print(json.dumps({
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# Step 14b: Seed curated MCP server images
+# ---------------------------------------------------------------------------
+if [ -n "${ACCESS_TOKEN:-}" ]; then
+    info "Seeding curated MCP server images..."
+
+    SEED_HTTP=$(curl -s --max-time 30 -o /tmp/mcp-seed-resp.json -w '%{http_code}' \
+        -X POST "$API_URL/api/v1/mcp-registry/seed-curated" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json")
+
+    if [ "$SEED_HTTP" = "200" ] || [ "$SEED_HTTP" = "201" ]; then
+        CREATED=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('created',0))" < /tmp/mcp-seed-resp.json 2>/dev/null) || true
+        SKIPPED=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('skipped',0))" < /tmp/mcp-seed-resp.json 2>/dev/null) || true
+        ok "MCP images seeded (created=$CREATED, skipped=$SKIPPED)"
+    else
+        warn "MCP image seeding returned HTTP $SEED_HTTP (non-fatal)"
+        cat /tmp/mcp-seed-resp.json 2>/dev/null || true
+    fi
+    rm -f /tmp/mcp-seed-resp.json
+fi
+
 # Cleanup sensitive temp files, tokens, and port-forward
 rm -f /tmp/biznez-runtime-kubeconfig.yaml
 unset ACCESS_TOKEN
