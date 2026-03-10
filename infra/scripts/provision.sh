@@ -724,6 +724,7 @@ kb64 = base64.b64encode(open('/tmp/biznez-runtime-kubeconfig.yaml','rb').read())
 print(json.dumps({
     'name': 'GKE Eval Cluster',
     'runtime_type': 'kubernetes',
+    'connection_config': {'type': 'gke'},
     'endpoint': sys.argv[1],
     'credentials': {'kubeconfig_content': kb64},
     'workspace_id': sys.argv[2],
