@@ -80,7 +80,7 @@ INSERT INTO plans (
 ) VALUES
     ('free', 'free', 'Free',
      'Get started with basic features. Perfect for individuals and small projects.',
-     0, 0, 'USD', 1, 3, 5, 1000, 1, 5, 1,
+     0, 0, 'USD', 1, 5, 5, 1000, 5, 5, 1,
      '{"basic_analytics": true, "community_support": true, "api_access": true, "custom_agents": false, "priority_support": false, "sso": false, "audit_logs": false}'::jsonb,
      true, true, 1, NOW(), NOW()),
     ('starter', 'starter', 'Starter',
