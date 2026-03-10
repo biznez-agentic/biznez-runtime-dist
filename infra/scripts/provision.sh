@@ -285,6 +285,10 @@ rules:
   - apiGroups: [""]
     resources: [services/status]
     verbs: [get]
+  # Secrets management — cluster-wide scope is required because MCP server
+  # deployments create secrets in dynamically-provisioned namespaces.
+  # Accepted trade-off for eval; production deployments should scope secrets
+  # access to biznez-managed namespaces via per-namespace Role/RoleBinding.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [create, get, update, delete, list]
@@ -341,8 +345,12 @@ HELM_ARGS=(
     --set postgres.secrets.password="$PG_PASS"
     --set gateway.image.repository=agentgateway
     --set gateway.image.tag="$GATEWAY_TAG"
-    --set rbac.serviceAccountName=biznez-runtime-deployer
 )
+
+# Use the deployer SA only when Step 5.6 created it (requires --cluster-endpoint)
+if [ -n "${CLUSTER_ENDPOINT:-}" ]; then
+    HELM_ARGS+=(--set rbac.serviceAccountName=biznez-runtime-deployer)
+fi
 
 if [ -n "${INGRESS_HOST:-}" ]; then
     HELM_ARGS+=(
