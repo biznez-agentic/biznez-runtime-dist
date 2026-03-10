@@ -250,6 +250,80 @@ if [ -n "${INGRESS_IP:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Step 5.6: Create runtime deployer RBAC (before Helm install so pods use this SA)
+# ---------------------------------------------------------------------------
+if [ -n "${CLUSTER_ENDPOINT:-}" ]; then
+    info "Creating runtime deployer service account and RBAC..."
+    kubectl apply -n "$NAMESPACE" -f - <<RBAC_EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: biznez-runtime-deployer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: biznez-runtime-deployer
+rules:
+  # Namespace management — cluster-wide scope is required because namespaces are
+  # cluster-scoped resources. The delete verb is needed for workspace teardown
+  # (base.py:309). Accepted trade-off for eval; production deployments should use
+  # label-based OPA/Gatekeeper policies to restrict deletion to biznez-managed
+  # namespaces (e.g. label: biznez.io/managed=true).
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [create, get, list, delete]
+  - apiGroups: ["apps"]
+    resources: [deployments]
+    verbs: [create, get, update, patch, delete, list, watch]
+  - apiGroups: ["apps"]
+    resources: [deployments/status]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [create, get, update, patch, delete, list]
+  - apiGroups: [""]
+    resources: [services/status]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, get, update, delete, list]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create, get, update, patch, delete, list]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses]
+    verbs: [create, get, update, patch, delete, list]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses/status]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: biznez-runtime-deployer
+subjects:
+  - kind: ServiceAccount
+    name: biznez-runtime-deployer
+    namespace: ${NAMESPACE}
+roleRef:
+  kind: ClusterRole
+  name: biznez-runtime-deployer
+  apiGroup: rbac.authorization.k8s.io
+RBAC_EOF
+    ok "Runtime deployer RBAC created"
+fi
+
+# ---------------------------------------------------------------------------
 # Step 6: Helm install
 # ---------------------------------------------------------------------------
 info "Installing Biznez runtime via Helm..."
@@ -267,6 +341,7 @@ HELM_ARGS=(
     --set postgres.secrets.password="$PG_PASS"
     --set gateway.image.repository=agentgateway
     --set gateway.image.tag="$GATEWAY_TAG"
+    --set rbac.serviceAccountName=biznez-runtime-deployer
 )
 
 if [ -n "${INGRESS_HOST:-}" ]; then
@@ -365,77 +440,9 @@ bash "$SEED_SCRIPT" --namespace "$NAMESPACE" --release "$RELEASE" || {
 }
 
 # ---------------------------------------------------------------------------
-# Step 10: Create K8s ServiceAccount + custom ClusterRole
+# Step 10: Generate deployer kubeconfig (RBAC already created in Step 5.6)
 # ---------------------------------------------------------------------------
 if [ -n "${CLUSTER_ENDPOINT:-}" ]; then
-    info "Creating runtime deployer service account and RBAC..."
-    kubectl apply -n "$NAMESPACE" -f - <<RBAC_EOF
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: biznez-runtime-deployer
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: biznez-runtime-deployer
-rules:
-  # Namespace management — cluster-wide scope is required because namespaces are
-  # cluster-scoped resources. The delete verb is needed for workspace teardown
-  # (base.py:309). Accepted trade-off for eval; production deployments should use
-  # label-based OPA/Gatekeeper policies to restrict deletion to biznez-managed
-  # namespaces (e.g. label: biznez.io/managed=true).
-  - apiGroups: [""]
-    resources: [namespaces]
-    verbs: [create, get, list, delete]
-  - apiGroups: ["apps"]
-    resources: [deployments]
-    verbs: [create, get, update, patch, delete, list, watch]
-  - apiGroups: ["apps"]
-    resources: [deployments/status]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [services]
-    verbs: [create, get, update, patch, delete, list]
-  - apiGroups: [""]
-    resources: [services/status]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [create, get, update, delete, list]
-  - apiGroups: [""]
-    resources: [configmaps]
-    verbs: [create, get, update, patch, delete, list]
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list, watch, delete]
-  - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [nodes]
-    verbs: [list]
-  - apiGroups: ["networking.k8s.io"]
-    resources: [ingresses]
-    verbs: [create, get, update, patch, delete, list]
-  - apiGroups: ["networking.k8s.io"]
-    resources: [ingresses/status]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: biznez-runtime-deployer
-subjects:
-  - kind: ServiceAccount
-    name: biznez-runtime-deployer
-    namespace: ${NAMESPACE}
-roleRef:
-  kind: ClusterRole
-  name: biznez-runtime-deployer
-  apiGroup: rbac.authorization.k8s.io
-RBAC_EOF
-
     # Generate token via TokenRequest API (deterministic, no polling)
     # Suppress xtrace for entire block: token generation + kubeconfig write
     _xtrace_was_on=false; case "$-" in *x*) _xtrace_was_on=true; set +x ;; esac
@@ -471,7 +478,7 @@ users:
 KUBECONFIG_EOF
         chmod 600 /tmp/biznez-runtime-kubeconfig.yaml
         if $_xtrace_was_on; then set -x; fi
-        ok "Runtime deployer RBAC and kubeconfig ready"
+        ok "Runtime deployer kubeconfig ready"
     fi
     unset SA_TOKEN  # clear from env immediately
 fi
