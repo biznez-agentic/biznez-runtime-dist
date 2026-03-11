@@ -203,7 +203,13 @@ jobs:
           python3 -m pip install --quiet pyyaml==6.0.2
 
       - name: Configure AR auth
-        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+        run: |
+          # Configure auth for all AR regions — source images may be hosted in a
+          # different region than the eval cluster (e.g., source in europe-west2,
+          # eval cluster in us-central1).
+          gcloud auth configure-docker \
+            europe-west2-docker.pkg.dev,us-central1-docker.pkg.dev,us-east1-docker.pkg.dev,asia-southeast1-docker.pkg.dev \
+            --quiet
 
       # -----------------------------------------------------------------
       # Step 6: Parse images.lock
@@ -401,6 +407,8 @@ jobs:
           echo "Helm upgrade:"
           echo "  helm upgrade ${RELEASE} ./helm/biznez-runtime \\"
           echo "    --reuse-values \\"
+          echo "    --atomic \\"
+          echo "    --cleanup-on-fail \\"
           echo "    --set backend.image.tag=${BACKEND_TAG} \\"
           echo "    --set frontend.image.tag=${FRONTEND_TAG} \\"
           echo "    --set gateway.image.tag=${GATEWAY_TAG} \\"
