@@ -265,8 +265,8 @@ jobs:
           revs = json.load(sys.stdin)
           print(revs[-1]['revision'])
           ")
-          ROLLBACK_TARGET=$((PRE_UPGRADE_REVISION - 1))
-          [ "$ROLLBACK_TARGET" -lt 1 ] && ROLLBACK_TARGET=1
+          # Rollback target is the current revision (the one we're about to replace)
+          ROLLBACK_TARGET="$PRE_UPGRADE_REVISION"
 
           # Read current image tags from live deployments
           CURRENT_BACKEND_TAG=$(kubectl get deploy "${RELEASE}-biznez-runtime-backend" -n "$NAMESPACE" \
@@ -472,10 +472,10 @@ jobs:
           echo "Pre-upgrade revision: $PRE_REVISION"
           echo "pre_revision=${PRE_REVISION}" >> "$GITHUB_OUTPUT"
 
-          # Log current values for audit / rollback reference
+          # Save current values for diff (kept on disk only, not printed in full)
           helm get values "$RELEASE" -n "$NAMESPACE" -o yaml > /tmp/pre-upgrade-values.yaml
-          echo "--- Current Helm values (pre-upgrade) ---"
-          cat /tmp/pre-upgrade-values.yaml
+          echo "--- Current Helm values (pre-upgrade, sensitive keys redacted) ---"
+          grep -v -iE '(password|secret|token|key|credential)' /tmp/pre-upgrade-values.yaml || true
 
           # Upgrade with --reuse-values: preserves ALL existing config
           # Only override the specific image tags
@@ -578,8 +578,10 @@ jobs:
           # 4. Migration init container check
           #    Target the pod from the LATEST ReplicaSet (not just newest by timestamp)
           echo "Checking migration status..."
+          # Note: kubectl jsonpath does not support negative indices like {.items[-1]}.
+          # Use slice notation {.items[-1:]} which returns the last element.
           LATEST_RS=$(kubectl get rs -n "$NAMESPACE" -l app.kubernetes.io/component=backend \
-            --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null) || true
+            --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null) || true
 
           if [ -n "$LATEST_RS" ]; then
             POD_HASH=$(kubectl get rs "$LATEST_RS" -n "$NAMESPACE" \
@@ -587,14 +589,14 @@ jobs:
             if [ -n "$POD_HASH" ]; then
               NEW_POD=$(kubectl get pod -n "$NAMESPACE" \
                 -l "app.kubernetes.io/component=backend,pod-template-hash=${POD_HASH}" \
-                --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null) || true
+                --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null) || true
             fi
           fi
 
           # Fallback: newest backend pod by creation timestamp
           if [ -z "${NEW_POD:-}" ]; then
             NEW_POD=$(kubectl get pod -n "$NAMESPACE" -l app.kubernetes.io/component=backend \
-              --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null) || true
+              --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null) || true
           fi
 
           if [ -n "${NEW_POD:-}" ]; then
