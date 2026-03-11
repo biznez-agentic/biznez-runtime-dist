@@ -505,10 +505,14 @@ jobs:
           echo "Post-upgrade revision: $POST_REVISION (rollback target: $PRE_REVISION)"
           echo "post_revision=${POST_REVISION}" >> "$GITHUB_OUTPUT"
 
-          # Log post-upgrade values for comparison
-          helm get values "$RELEASE" -n "$NAMESPACE" -o yaml > /tmp/post-upgrade-values.yaml
-          echo "--- Helm values diff (pre vs post) ---"
-          diff /tmp/pre-upgrade-values.yaml /tmp/post-upgrade-values.yaml || true
+          # Log post-upgrade values diff (sensitive keys redacted from both sides)
+          helm get values "$RELEASE" -n "$NAMESPACE" -o yaml \
+            | grep -v -iE '(password|secret|token|key|credential)' \
+            > /tmp/post-upgrade-values-redacted.yaml
+          grep -v -iE '(password|secret|token|key|credential)' /tmp/pre-upgrade-values.yaml \
+            > /tmp/pre-upgrade-values-redacted.yaml || true
+          echo "--- Helm values diff (pre vs post, sensitive keys redacted) ---"
+          diff /tmp/pre-upgrade-values-redacted.yaml /tmp/post-upgrade-values-redacted.yaml || true
 
       # -----------------------------------------------------------------
       # Step 12: Verify rollout
