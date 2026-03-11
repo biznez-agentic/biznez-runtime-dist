@@ -58,7 +58,6 @@ jobs:
     outputs:
       pre_revision: ${{ steps.upgrade.outputs.pre_revision || steps.preview.outputs.pre_revision }}
       post_revision: ${{ steps.upgrade.outputs.post_revision }}
-      upgrade_status: ${{ steps.upgrade.outputs.upgrade_status }}
       backend_tag: ${{ steps.parse-images.outputs.platform_api_tag }}
       frontend_tag: ${{ steps.parse-images.outputs.web_app_tag }}
       gateway_tag: ${{ steps.parse-images.outputs.agentgateway_tag }}
@@ -413,9 +412,7 @@ jobs:
       - name: Exit dry run
         if: inputs.dry_run == true
         run: |
-          echo "dry_run=true — exiting before mutations."
-          # Ensure summary job knows this was a dry run
-          exit 0
+          echo "dry_run=true — workflow will skip all mutation steps (copy images, helm upgrade, health checks)."
 
       # -----------------------------------------------------------------
       # Step 10: Copy images (only when not dry_run)
@@ -482,8 +479,12 @@ jobs:
 
           # Upgrade with --reuse-values: preserves ALL existing config
           # Only override the specific image tags
+          # --atomic: auto-rollback on failure, keeps release in clean state
+          # --cleanup-on-fail: remove new resources created during failed upgrade
           helm upgrade "$RELEASE" ./helm/biznez-runtime \
             --reuse-values \
+            --atomic \
+            --cleanup-on-fail \
             --set backend.image.tag="$BACKEND_TAG" \
             --set frontend.image.tag="$FRONTEND_TAG" \
             --set gateway.image.tag="$GATEWAY_TAG" \
@@ -495,7 +496,6 @@ jobs:
           import sys, json; print(json.load(sys.stdin)[-1]['revision'])")
           echo "Post-upgrade revision: $POST_REVISION (rollback target: $PRE_REVISION)"
           echo "post_revision=${POST_REVISION}" >> "$GITHUB_OUTPUT"
-          echo "upgrade_status=success" >> "$GITHUB_OUTPUT"
 
           # Log post-upgrade values for comparison
           helm get values "$RELEASE" -n "$NAMESPACE" -o yaml > /tmp/post-upgrade-values.yaml
@@ -688,7 +688,7 @@ jobs:
           CURRENT_GATEWAY_TAG: ${{ needs.upgrade-runtime.outputs.current_gateway_tag }}
           CURRENT_POSTGRES_TAG: ${{ needs.upgrade-runtime.outputs.current_postgres_tag }}
         run: |
-          if [ "$DRY_RUN" = "true" ]; then
+          if [ "$DRY_RUN" = "true" ] && [ "$UPGRADE_RESULT" = "success" ]; then
             cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Upgrade Eval Environment: Dry Run Complete
 
@@ -752,14 +752,14 @@ jobs:
             cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Upgrade Eval Environment: Failed
 
-          The upgrade did not complete successfully. The previous revision may still be serving.
+          The upgrade did not complete successfully. Helm \`--atomic\` flag auto-rolls back the release on upgrade failure, so the previous revision should be restored.
 
           | Property | Value |
           |----------|-------|
           | **Environment ID** | \`${ENV_ID}\` |
           | **Region** | \`${REGION}\` |
           | **Project** | \`${GCP_PROJECT_ID}\` |
-          | **Pre-upgrade revision** | \`${PRE_REVISION:-N/A}\` (rollback to this) |
+          | **Pre-upgrade revision** | \`${PRE_REVISION:-N/A}\` |
           | **Post-upgrade revision** | \`${POST_REVISION:-N/A}\` (failed) |
 
           ### Immediate Actions
@@ -775,12 +775,17 @@ jobs:
           kubectl logs -l app.kubernetes.io/component=backend -n ${NAMESPACE} -c run-migrations
           \`\`\`
 
-          3. Rollback to previous revision:
+          3. Verify auto-rollback succeeded:
+          \`\`\`bash
+          helm history ${RELEASE} -n ${NAMESPACE}
+          \`\`\`
+
+          4. If auto-rollback failed or DB is in a partially migrated state, manual rollback:
           \`\`\`bash
           helm rollback ${RELEASE} ${PRE_REVISION:-N/A} -n ${NAMESPACE} --wait --timeout 300s
           \`\`\`
 
-          4. If DB is in a partially migrated state, do NOT retry automatically.
+          5. If DB is in a partially migrated state, do NOT retry automatically.
              Review migration logs and database state before any further action.
           EOF
           fi
