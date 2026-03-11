@@ -1,0 +1,786 @@
+name: Upgrade Eval Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_id:
+        description: 'Existing environment ID (e.g., manimaun22-4ui5)'
+        required: true
+        type: string
+      region:
+        description: 'GCP region where the cluster lives'
+        required: true
+        type: choice
+        options:
+          - europe-west2
+          - us-central1
+          - us-east1
+          - asia-southeast1
+      gcp_project_id:
+        description: 'GCP project ID (defaults to vars.GCP_PROJECT_ID)'
+        required: false
+        type: string
+      allow_source_repo_fallback:
+        description: 'Allow fallback to sourceRepo if releaseRepo is empty (dev only)'
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: 'Dry run — preflight + preview + validate only, no mutations'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: upgrade-eval-${{ inputs.env_id }}
+  cancel-in-progress: false
+
+env:
+  ENV_ID: ${{ inputs.env_id }}
+  REGION: ${{ inputs.region }}
+  GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
+  ALLOW_FALLBACK: ${{ inputs.allow_source_repo_fallback }}
+  DRY_RUN: ${{ inputs.dry_run }}
+  NAMESPACE: biznez
+  RELEASE: biznez
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Upgrade Runtime
+  # -------------------------------------------------------------------------
+  upgrade-runtime:
+    name: Upgrade Runtime
+    runs-on: ubuntu-latest
+    outputs:
+      pre_revision: ${{ steps.upgrade.outputs.pre_revision || steps.preview.outputs.pre_revision }}
+      post_revision: ${{ steps.upgrade.outputs.post_revision }}
+      upgrade_status: ${{ steps.upgrade.outputs.upgrade_status }}
+      backend_tag: ${{ steps.parse-images.outputs.platform_api_tag }}
+      frontend_tag: ${{ steps.parse-images.outputs.web_app_tag }}
+      gateway_tag: ${{ steps.parse-images.outputs.agentgateway_tag }}
+      postgres_tag: ${{ steps.parse-images.outputs.postgres_tag }}
+      ar_url: ${{ steps.validate-ar.outputs.ar_url }}
+      ingress_host: ${{ steps.preflight.outputs.ingress_host }}
+      current_backend_tag: ${{ steps.preview.outputs.current_backend_tag }}
+      current_frontend_tag: ${{ steps.preview.outputs.current_frontend_tag }}
+      current_gateway_tag: ${{ steps.preview.outputs.current_gateway_tag }}
+      current_postgres_tag: ${{ steps.preview.outputs.current_postgres_tag }}
+    steps:
+      # -----------------------------------------------------------------
+      # Step 1: Checkout repo
+      # -----------------------------------------------------------------
+      - uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------
+      # Step 2: GCP auth (WIF)
+      # -----------------------------------------------------------------
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      # -----------------------------------------------------------------
+      # Step 3: Get GKE credentials
+      # -----------------------------------------------------------------
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: biznez-eval-${{ inputs.env_id }}
+          location: ${{ inputs.region }}
+          project_id: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID }}
+
+      # -----------------------------------------------------------------
+      # Step 4: Preflight checks
+      # -----------------------------------------------------------------
+      - name: Preflight checks
+        id: preflight
+        run: |
+          set -euo pipefail
+          echo "=== Preflight Checks ==="
+
+          # 1. Namespace exists
+          echo "Checking namespace..."
+          kubectl get namespace "$NAMESPACE" || {
+            echo "::error::Namespace '$NAMESPACE' not found. This env may not exist or is partially provisioned."
+            echo "::error::Use provision-eval.yml to create or repair the environment."
+            exit 1
+          }
+
+          # 2. Helm release exists
+          echo "Checking Helm release..."
+          helm status "$RELEASE" -n "$NAMESPACE" > /dev/null 2>&1 || {
+            echo "::error::Helm release '$RELEASE' not found. Use provision-eval.yml first."
+            exit 1
+          }
+
+          # 3. Core deployments exist
+          echo "Checking core deployments..."
+          for DEPLOY in "${RELEASE}-biznez-runtime-backend" "${RELEASE}-biznez-runtime-frontend" "${RELEASE}-biznez-runtime-gateway"; do
+            kubectl get deploy "$DEPLOY" -n "$NAMESPACE" > /dev/null 2>&1 || {
+              echo "::error::Deployment $DEPLOY not found. Environment is incomplete."
+              exit 1
+            }
+          done
+
+          # 4. Backend is currently healthy (via service port-forward)
+          echo "Checking backend health..."
+          kubectl port-forward "svc/${RELEASE}-biznez-runtime-backend" -n "$NAMESPACE" 18000:8000 &
+          PF_PID=$!
+          trap 'kill $PF_PID 2>/dev/null || true' EXIT
+          sleep 5
+          curl -sf --max-time 10 http://localhost:18000/api/v1/health || {
+            echo "::error::Backend health check failed. Fix the existing environment before upgrading."
+            exit 1
+          }
+          kill $PF_PID 2>/dev/null || true
+          trap - EXIT
+          echo "Backend health: OK"
+
+          # 5. Ingress (informational)
+          INGRESS_HOST=$(kubectl get ingress -n "$NAMESPACE" -o jsonpath='{.items[0].spec.rules[0].host}' 2>/dev/null) || true
+          echo "ingress_host=${INGRESS_HOST}" >> "$GITHUB_OUTPUT"
+          if [ -n "$INGRESS_HOST" ]; then
+            echo "Ingress host: $INGRESS_HOST"
+          else
+            echo "::warning::No ingress found"
+          fi
+
+          echo "=== Preflight: PASSED ==="
+
+      # -----------------------------------------------------------------
+      # Step 5: Derive + validate AR URL
+      # -----------------------------------------------------------------
+      - name: Validate AR URL
+        id: validate-ar
+        run: |
+          set -euo pipefail
+          echo "=== AR URL Validation ==="
+
+          # Derive from naming convention
+          DERIVED_AR_URL="${REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/biznez-eval-${ENV_ID}"
+
+          # Read actual image prefix from live backend deployment
+          CURRENT_IMAGE=$(kubectl get deploy "${RELEASE}-biznez-runtime-backend" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Current backend image: $CURRENT_IMAGE"
+
+          # Extract AR prefix (everything before the last /name:tag)
+          CURRENT_AR_PREFIX=$(echo "$CURRENT_IMAGE" | sed 's|/[^/]*:[^:]*$||')
+          echo "Current AR prefix: $CURRENT_AR_PREFIX"
+
+          if [ "$DERIVED_AR_URL" != "$CURRENT_AR_PREFIX" ]; then
+            echo "::warning::AR URL mismatch — using live value instead of derived."
+            echo "  Derived: $DERIVED_AR_URL"
+            echo "  Live:    $CURRENT_AR_PREFIX"
+            AR_URL="$CURRENT_AR_PREFIX"
+          else
+            AR_URL="$DERIVED_AR_URL"
+          fi
+
+          echo "ar_url=${AR_URL}" >> "$GITHUB_OUTPUT"
+          echo "AR URL: $AR_URL"
+
+      # -----------------------------------------------------------------
+      # Step 5b: Install tools
+      # -----------------------------------------------------------------
+      - name: Install tools
+        run: |
+          set -euo pipefail
+
+          # Install crane for image operations
+          CRANE_VERSION="v0.20.2"
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar xzf - crane
+          chmod +x crane
+          sudo mv crane /usr/local/bin/
+          crane version
+
+          # Install PyYAML (pinned for repeatability)
+          python3 -m pip install --quiet pyyaml==6.0.2
+
+      - name: Configure AR auth
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      # -----------------------------------------------------------------
+      # Step 6: Parse images.lock
+      # -----------------------------------------------------------------
+      - name: Parse images.lock
+        id: parse-images
+        run: |
+          set -euo pipefail
+          echo "=== Parsing images.lock ==="
+
+          python3 <<'PYEOF'
+          import yaml, json, os
+
+          with open("helm/biznez-runtime/images.lock") as f:
+              data = yaml.safe_load(f)
+
+          result = {}
+          for img in data.get("images", []):
+              name = img["name"]
+              result[name] = {
+                  "tag": img.get("tag", ""),
+                  "sourceRepo": img.get("sourceRepo", ""),
+                  "releaseRepo": img.get("releaseRepo", ""),
+              }
+
+          # Write JSON for later steps
+          with open("/tmp/images-parsed.json", "w") as f:
+              json.dump(result, f, indent=2)
+
+          # Write to GITHUB_OUTPUT
+          gh_output = os.environ["GITHUB_OUTPUT"]
+          with open(gh_output, "a") as out:
+              for name, info in result.items():
+                  safe = name.replace("-", "_")
+                  out.write(f"{safe}_tag={info['tag']}\n")
+                  out.write(f"{safe}_source={info['sourceRepo']}\n")
+                  out.write(f"{safe}_release={info['releaseRepo']}\n")
+
+          # Log
+          for name, info in result.items():
+              print(f"  {name}: tag={info['tag']} source={info['sourceRepo']}")
+          PYEOF
+
+          echo "=== images.lock parsed ==="
+
+      # -----------------------------------------------------------------
+      # Step 7: Preview (current vs target)
+      # -----------------------------------------------------------------
+      - name: Preview upgrade
+        id: preview
+        env:
+          AR_URL: ${{ steps.validate-ar.outputs.ar_url }}
+        run: |
+          set -euo pipefail
+
+          # Capture current Helm revision
+          PRE_UPGRADE_REVISION=$(helm history "$RELEASE" -n "$NAMESPACE" -o json | python3 -c "
+          import sys, json
+          revs = json.load(sys.stdin)
+          print(revs[-1]['revision'])
+          ")
+          ROLLBACK_TARGET=$((PRE_UPGRADE_REVISION - 1))
+          [ "$ROLLBACK_TARGET" -lt 1 ] && ROLLBACK_TARGET=1
+
+          # Read current image tags from live deployments
+          CURRENT_BACKEND_TAG=$(kubectl get deploy "${RELEASE}-biznez-runtime-backend" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
+          CURRENT_FRONTEND_TAG=$(kubectl get deploy "${RELEASE}-biznez-runtime-frontend" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
+          CURRENT_GATEWAY_TAG=$(kubectl get deploy "${RELEASE}-biznez-runtime-gateway" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://')
+          CURRENT_POSTGRES_TAG=$(kubectl get statefulset "${RELEASE}-biznez-runtime-postgres" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null | sed 's/.*://' || echo "N/A")
+
+          # Read target tags from parsed images.lock
+          TARGET_BACKEND_TAG=$(python3 -c "import json; print(json.load(open('/tmp/images-parsed.json'))['platform-api']['tag'])")
+          TARGET_FRONTEND_TAG=$(python3 -c "import json; print(json.load(open('/tmp/images-parsed.json'))['web-app']['tag'])")
+          TARGET_GATEWAY_TAG=$(python3 -c "import json; print(json.load(open('/tmp/images-parsed.json'))['agentgateway']['tag'])")
+          TARGET_POSTGRES_TAG=$(python3 -c "import json; print(json.load(open('/tmp/images-parsed.json'))['postgres']['tag'])")
+
+          INGRESS_HOST="${{ steps.preflight.outputs.ingress_host }}"
+
+          echo "=== Upgrade Preview ==="
+          echo "Cluster:    biznez-eval-${ENV_ID}"
+          echo "Namespace:  ${NAMESPACE}"
+          echo "Release:    ${RELEASE} (current revision: ${PRE_UPGRADE_REVISION}, rollback target: ${ROLLBACK_TARGET})"
+          echo "Ingress:    ${INGRESS_HOST:-N/A}"
+          echo "AR URL:     ${AR_URL}"
+          echo "Dry run:    ${DRY_RUN}"
+          echo ""
+          printf "  %-20s %-40s %-40s\n" "Component" "Current Tag" "Target Tag"
+          printf "  %-20s %-40s %-40s\n" "─────────" "───────────" "──────────"
+
+          show_tag() {
+            local name="$1" current="$2" target="$3"
+            if [ "$current" = "$target" ]; then
+              printf "  %-20s %-40s %-40s\n" "$name" "$current" "$target (unchanged)"
+            else
+              printf "  %-20s %-40s %-40s\n" "$name" "$current" "$target"
+            fi
+          }
+
+          show_tag "platform-api" "$CURRENT_BACKEND_TAG" "$TARGET_BACKEND_TAG"
+          show_tag "web-app" "$CURRENT_FRONTEND_TAG" "$TARGET_FRONTEND_TAG"
+          show_tag "agentgateway" "$CURRENT_GATEWAY_TAG" "$TARGET_GATEWAY_TAG"
+          show_tag "postgres" "$CURRENT_POSTGRES_TAG" "$TARGET_POSTGRES_TAG"
+
+          # Output for summary job
+          echo "current_backend_tag=${CURRENT_BACKEND_TAG}" >> "$GITHUB_OUTPUT"
+          echo "current_frontend_tag=${CURRENT_FRONTEND_TAG}" >> "$GITHUB_OUTPUT"
+          echo "current_gateway_tag=${CURRENT_GATEWAY_TAG}" >> "$GITHUB_OUTPUT"
+          echo "current_postgres_tag=${CURRENT_POSTGRES_TAG}" >> "$GITHUB_OUTPUT"
+          echo "pre_revision=${PRE_UPGRADE_REVISION}" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------
+      # Step 8: Validate source image existence
+      # -----------------------------------------------------------------
+      - name: Validate source images
+        id: validate-sources
+        run: |
+          set -euo pipefail
+          echo "=== Validating Source Images ==="
+
+          MISSING=0
+          IMAGES_JSON="/tmp/images-parsed.json"
+
+          for IMG_NAME in platform-api web-app agentgateway postgres; do
+            RELEASE_REPO=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['releaseRepo'])")
+            SOURCE_REPO=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['sourceRepo'])")
+            TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['tag'])")
+
+            # Determine source repo (same logic as copy step)
+            SRC_REPO=""
+            if [ -n "$RELEASE_REPO" ]; then
+              SRC_REPO="$RELEASE_REPO"
+            elif [ "$ALLOW_FALLBACK" = "true" ] && [ -n "$SOURCE_REPO" ]; then
+              SRC_REPO="$SOURCE_REPO"
+            else
+              echo "::error::No source repo for $IMG_NAME (releaseRepo empty, fallback disabled)"
+              MISSING=$((MISSING + 1))
+              continue
+            fi
+
+            if crane manifest "${SRC_REPO}:${TAG}" > /dev/null 2>&1; then
+              echo "  OK: ${SRC_REPO}:${TAG}"
+            else
+              echo "::error::Source image not found: ${SRC_REPO}:${TAG}"
+              MISSING=$((MISSING + 1))
+            fi
+          done
+
+          if [ "$MISSING" -gt 0 ]; then
+            echo "::error::$MISSING source image(s) not found. Aborting before any mutations."
+            exit 1
+          fi
+
+          echo "=== All source images validated ==="
+
+      # -----------------------------------------------------------------
+      # Step 9: Dry run exit point
+      # -----------------------------------------------------------------
+      - name: Dry run summary
+        if: inputs.dry_run == true
+        env:
+          AR_URL: ${{ steps.validate-ar.outputs.ar_url }}
+        run: |
+          set -euo pipefail
+          echo "=== Dry Run — commands that would execute ==="
+
+          IMAGES_JSON="/tmp/images-parsed.json"
+
+          echo ""
+          echo "Image copies:"
+          for IMG_NAME in platform-api web-app agentgateway postgres; do
+            RELEASE_REPO=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['releaseRepo'])")
+            SOURCE_REPO=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['sourceRepo'])")
+            TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['tag'])")
+
+            SRC_REPO=""
+            if [ -n "$RELEASE_REPO" ]; then
+              SRC_REPO="$RELEASE_REPO"
+            elif [ "$ALLOW_FALLBACK" = "true" ] && [ -n "$SOURCE_REPO" ]; then
+              SRC_REPO="$SOURCE_REPO"
+            fi
+
+            echo "  crane copy ${SRC_REPO}:${TAG} ${AR_URL}/${IMG_NAME}:${TAG}"
+          done
+
+          BACKEND_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['platform-api']['tag'])")
+          FRONTEND_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['web-app']['tag'])")
+          GATEWAY_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['agentgateway']['tag'])")
+          POSTGRES_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['postgres']['tag'])")
+
+          echo ""
+          echo "Helm upgrade:"
+          echo "  helm upgrade ${RELEASE} ./helm/biznez-runtime \\"
+          echo "    --reuse-values \\"
+          echo "    --set backend.image.tag=${BACKEND_TAG} \\"
+          echo "    --set frontend.image.tag=${FRONTEND_TAG} \\"
+          echo "    --set gateway.image.tag=${GATEWAY_TAG} \\"
+          echo "    --set postgres.image.tag=${POSTGRES_TAG} \\"
+          echo "    -n ${NAMESPACE} --wait --timeout 600s"
+          echo ""
+          echo "Dry run complete. Re-run with dry_run=false to apply."
+
+      - name: Exit dry run
+        if: inputs.dry_run == true
+        run: |
+          echo "dry_run=true — exiting before mutations."
+          # Ensure summary job knows this was a dry run
+          exit 0
+
+      # -----------------------------------------------------------------
+      # Step 10: Copy images (only when not dry_run)
+      # -----------------------------------------------------------------
+      - name: Copy images to eval AR
+        if: inputs.dry_run != true
+        env:
+          AR_URL: ${{ steps.validate-ar.outputs.ar_url }}
+        run: |
+          set -euo pipefail
+          echo "=== Copying Images ==="
+
+          IMAGES_JSON="/tmp/images-parsed.json"
+
+          for IMG_NAME in platform-api web-app agentgateway postgres; do
+            RELEASE_REPO=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['releaseRepo'])")
+            SOURCE_REPO=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['sourceRepo'])")
+            TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['$IMG_NAME']['tag'])")
+
+            SRC_REPO=""
+            if [ -n "$RELEASE_REPO" ]; then
+              SRC_REPO="$RELEASE_REPO"
+            elif [ "$ALLOW_FALLBACK" = "true" ] && [ -n "$SOURCE_REPO" ]; then
+              echo "::warning::Using sourceRepo fallback for $IMG_NAME (dev only)"
+              SRC_REPO="$SOURCE_REPO"
+            else
+              echo "::error::No source repo for $IMG_NAME"
+              exit 1
+            fi
+
+            echo "Copying ${SRC_REPO}:${TAG} -> ${AR_URL}/${IMG_NAME}:${TAG}"
+            crane copy "${SRC_REPO}:${TAG}" "${AR_URL}/${IMG_NAME}:${TAG}"
+          done
+
+          echo "=== All images copied ==="
+
+      # -----------------------------------------------------------------
+      # Step 11: Helm upgrade --reuse-values
+      # -----------------------------------------------------------------
+      - name: Helm upgrade
+        if: inputs.dry_run != true
+        id: upgrade
+        run: |
+          set -euo pipefail
+          echo "=== Helm Upgrade ==="
+
+          IMAGES_JSON="/tmp/images-parsed.json"
+
+          BACKEND_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['platform-api']['tag'])")
+          FRONTEND_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['web-app']['tag'])")
+          GATEWAY_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['agentgateway']['tag'])")
+          POSTGRES_TAG=$(python3 -c "import json; print(json.load(open('$IMAGES_JSON'))['postgres']['tag'])")
+
+          # Capture pre-upgrade revision
+          PRE_REVISION=$(helm history "$RELEASE" -n "$NAMESPACE" -o json | python3 -c "
+          import sys, json; print(json.load(sys.stdin)[-1]['revision'])")
+          echo "Pre-upgrade revision: $PRE_REVISION"
+          echo "pre_revision=${PRE_REVISION}" >> "$GITHUB_OUTPUT"
+
+          # Log current values for audit / rollback reference
+          helm get values "$RELEASE" -n "$NAMESPACE" -o yaml > /tmp/pre-upgrade-values.yaml
+          echo "--- Current Helm values (pre-upgrade) ---"
+          cat /tmp/pre-upgrade-values.yaml
+
+          # Upgrade with --reuse-values: preserves ALL existing config
+          # Only override the specific image tags
+          helm upgrade "$RELEASE" ./helm/biznez-runtime \
+            --reuse-values \
+            --set backend.image.tag="$BACKEND_TAG" \
+            --set frontend.image.tag="$FRONTEND_TAG" \
+            --set gateway.image.tag="$GATEWAY_TAG" \
+            --set postgres.image.tag="$POSTGRES_TAG" \
+            -n "$NAMESPACE" --wait --timeout 600s
+
+          # Capture post-upgrade revision
+          POST_REVISION=$(helm history "$RELEASE" -n "$NAMESPACE" -o json | python3 -c "
+          import sys, json; print(json.load(sys.stdin)[-1]['revision'])")
+          echo "Post-upgrade revision: $POST_REVISION (rollback target: $PRE_REVISION)"
+          echo "post_revision=${POST_REVISION}" >> "$GITHUB_OUTPUT"
+          echo "upgrade_status=success" >> "$GITHUB_OUTPUT"
+
+          # Log post-upgrade values for comparison
+          helm get values "$RELEASE" -n "$NAMESPACE" -o yaml > /tmp/post-upgrade-values.yaml
+          echo "--- Helm values diff (pre vs post) ---"
+          diff /tmp/pre-upgrade-values.yaml /tmp/post-upgrade-values.yaml || true
+
+      # -----------------------------------------------------------------
+      # Step 12: Verify rollout
+      # -----------------------------------------------------------------
+      - name: Verify rollout
+        if: inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          echo "=== Verifying Rollout ==="
+
+          for DEPLOY in "${RELEASE}-biznez-runtime-backend" "${RELEASE}-biznez-runtime-frontend" "${RELEASE}-biznez-runtime-gateway"; do
+            echo "Checking rollout: $DEPLOY"
+            kubectl rollout status deploy "$DEPLOY" -n "$NAMESPACE" --timeout=300s
+          done
+
+          echo ""
+          echo "Current images after upgrade:"
+          for DEPLOY in "${RELEASE}-biznez-runtime-backend" "${RELEASE}-biznez-runtime-frontend" "${RELEASE}-biznez-runtime-gateway"; do
+            IMG=$(kubectl get deploy "$DEPLOY" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].image}')
+            echo "  $DEPLOY: $IMG"
+          done
+
+          echo "=== Rollout verified ==="
+
+      # -----------------------------------------------------------------
+      # Step 13: Post-upgrade health checks
+      # -----------------------------------------------------------------
+      - name: Post-upgrade health checks
+        if: inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          echo "=== Post-Upgrade Health Checks ==="
+
+          # 1. Backend health (AUTHORITATIVE — via service port-forward)
+          echo "Checking backend health..."
+          kubectl port-forward "svc/${RELEASE}-biznez-runtime-backend" -n "$NAMESPACE" 18000:8000 &
+          PF_BACKEND=$!
+          trap 'kill $PF_BACKEND 2>/dev/null || true' EXIT
+          sleep 5
+          curl -sf --max-time 10 http://localhost:18000/api/v1/health || {
+            echo "::error::Backend health check failed after upgrade"
+            exit 1
+          }
+          kill $PF_BACKEND 2>/dev/null || true
+          trap - EXIT
+          echo "Backend health: OK"
+
+          # 2. Frontend health (AUTHORITATIVE — via service port-forward)
+          echo "Checking frontend health..."
+          kubectl port-forward "svc/${RELEASE}-biznez-runtime-frontend" -n "$NAMESPACE" 18080:80 &
+          PF_FRONTEND=$!
+          trap 'kill $PF_FRONTEND 2>/dev/null || true' EXIT
+          sleep 5
+          curl -sf --max-time 10 http://localhost:18080/ -o /dev/null || {
+            echo "::error::Frontend health check failed after upgrade"
+            exit 1
+          }
+          kill $PF_FRONTEND 2>/dev/null || true
+          trap - EXIT
+          echo "Frontend health: OK"
+
+          # 3. Ingress checks — SUPPLEMENTAL, non-fatal
+          #    DNS/LB propagation may lag briefly after an upgrade.
+          INGRESS_HOST="${{ steps.preflight.outputs.ingress_host }}"
+          if [ -n "$INGRESS_HOST" ]; then
+            echo "Checking ingress (supplemental)..."
+            curl -sf --max-time 10 "http://${INGRESS_HOST}/api/v1/health" > /dev/null 2>&1 || {
+              echo "::warning::Backend not reachable through ingress (DNS/LB propagation may be in progress — non-fatal)"
+            }
+            curl -sf --max-time 10 "http://${INGRESS_HOST}/" -o /dev/null 2>&1 || {
+              echo "::warning::Frontend not reachable through ingress (DNS/LB propagation may be in progress — non-fatal)"
+            }
+          fi
+
+          # 4. Migration init container check
+          #    Target the pod from the LATEST ReplicaSet (not just newest by timestamp)
+          echo "Checking migration status..."
+          LATEST_RS=$(kubectl get rs -n "$NAMESPACE" -l app.kubernetes.io/component=backend \
+            --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null) || true
+
+          if [ -n "$LATEST_RS" ]; then
+            POD_HASH=$(kubectl get rs "$LATEST_RS" -n "$NAMESPACE" \
+              -o jsonpath='{.metadata.labels.pod-template-hash}' 2>/dev/null) || true
+            if [ -n "$POD_HASH" ]; then
+              NEW_POD=$(kubectl get pod -n "$NAMESPACE" \
+                -l "app.kubernetes.io/component=backend,pod-template-hash=${POD_HASH}" \
+                --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null) || true
+            fi
+          fi
+
+          # Fallback: newest backend pod by creation timestamp
+          if [ -z "${NEW_POD:-}" ]; then
+            NEW_POD=$(kubectl get pod -n "$NAMESPACE" -l app.kubernetes.io/component=backend \
+              --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null) || true
+          fi
+
+          if [ -n "${NEW_POD:-}" ]; then
+            INIT_STATUS=$(kubectl get pod "$NEW_POD" -n "$NAMESPACE" \
+              -o jsonpath='{.status.initContainerStatuses[?(@.name=="run-migrations")].state.terminated.exitCode}' 2>/dev/null) || true
+            if [ -n "$INIT_STATUS" ] && [ "$INIT_STATUS" != "0" ]; then
+              echo "::error::Migration init container on pod $NEW_POD exited with code $INIT_STATUS"
+              echo "::error::Check logs: kubectl logs $NEW_POD -n $NAMESPACE -c run-migrations"
+              exit 1
+            fi
+            echo "Migration check: OK (pod=$NEW_POD, rs=${LATEST_RS:-fallback}, exit=${INIT_STATUS:-N/A})"
+          else
+            echo "::warning::Could not find backend pod for migration check"
+          fi
+
+          echo "=== Health Checks: PASSED ==="
+
+      # -----------------------------------------------------------------
+      # Step 14: MCP/Gateway diagnostics (best-effort)
+      # -----------------------------------------------------------------
+      - name: MCP diagnostics (best-effort)
+        if: inputs.dry_run != true
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          echo "=== MCP/Gateway Post-Upgrade Diagnostics (best-effort) ==="
+
+          # Layer 1: Namespace check (supplemental — depends on consistent labeling)
+          MCP_NS=$(kubectl get ns -l biznez-platform=true -o name 2>/dev/null) || true
+          if [ -n "$MCP_NS" ]; then
+            echo "MCP namespaces found:"
+            echo "$MCP_NS"
+            for NS in $MCP_NS; do
+              NS_NAME=$(echo "$NS" | sed 's|namespace/||')
+              kubectl get pods -n "$NS_NAME" --no-headers 2>/dev/null || true
+            done
+          else
+            echo "No MCP namespaces found via label (may not be labeled, or no MCP servers deployed)"
+          fi
+
+          # Layer 2: API check (authoritative)
+          # Uses the canonical backend MCP listing endpoint currently used by the frontend.
+          # If this endpoint changes, this diagnostic will emit a warning — never fail the upgrade.
+          MCP_API_PATH="/api/v1/mcp/servers"
+
+          kubectl port-forward "svc/${RELEASE}-biznez-runtime-backend" -n "$NAMESPACE" 18000:8000 &
+          PF_PID=$!
+          trap 'kill $PF_PID 2>/dev/null || true' EXIT
+          sleep 5
+
+          MCP_RESP=$(curl -sf --max-time 10 "http://localhost:18000${MCP_API_PATH}" 2>/dev/null) || true
+          if [ -n "$MCP_RESP" ]; then
+            echo "MCP servers API response received"
+            echo "$MCP_RESP" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          items = data if isinstance(data, list) else data.get('items', [])
+          print(f'MCP server definitions: {len(items)}')
+          for s in items:
+              print(f\"  {s.get('name', '?'):20s} status={s.get('status', '?')}\")
+          " 2>/dev/null || echo "  (could not parse response — endpoint may have changed)"
+          else
+            echo "::warning::Could not reach MCP servers API at ${MCP_API_PATH} (endpoint may have changed — non-fatal)"
+          fi
+
+          kill $PF_PID 2>/dev/null || true
+          trap - EXIT
+
+  # -------------------------------------------------------------------------
+  # Job 2: Summary (always runs)
+  # -------------------------------------------------------------------------
+  summary:
+    name: Summary
+    needs: [upgrade-runtime]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write job summary
+        env:
+          UPGRADE_RESULT: ${{ needs.upgrade-runtime.result }}
+          PRE_REVISION: ${{ needs.upgrade-runtime.outputs.pre_revision }}
+          POST_REVISION: ${{ needs.upgrade-runtime.outputs.post_revision }}
+          BACKEND_TAG: ${{ needs.upgrade-runtime.outputs.backend_tag }}
+          FRONTEND_TAG: ${{ needs.upgrade-runtime.outputs.frontend_tag }}
+          GATEWAY_TAG: ${{ needs.upgrade-runtime.outputs.gateway_tag }}
+          POSTGRES_TAG: ${{ needs.upgrade-runtime.outputs.postgres_tag }}
+          AR_URL: ${{ needs.upgrade-runtime.outputs.ar_url }}
+          INGRESS_HOST: ${{ needs.upgrade-runtime.outputs.ingress_host }}
+          CURRENT_BACKEND_TAG: ${{ needs.upgrade-runtime.outputs.current_backend_tag }}
+          CURRENT_FRONTEND_TAG: ${{ needs.upgrade-runtime.outputs.current_frontend_tag }}
+          CURRENT_GATEWAY_TAG: ${{ needs.upgrade-runtime.outputs.current_gateway_tag }}
+          CURRENT_POSTGRES_TAG: ${{ needs.upgrade-runtime.outputs.current_postgres_tag }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Upgrade Eval Environment: Dry Run Complete
+
+          | Property | Value |
+          |----------|-------|
+          | **Environment ID** | \`${ENV_ID}\` |
+          | **Region** | \`${REGION}\` |
+          | **Project** | \`${GCP_PROJECT_ID}\` |
+          | **AR URL** | \`${AR_URL:-N/A}\` |
+          | **Dry Run** | Yes — no mutations performed |
+
+          ### Image Preview
+
+          | Component | Current Tag | Target Tag |
+          |-----------|-------------|------------|
+          | platform-api | \`${CURRENT_BACKEND_TAG:-N/A}\` | \`${BACKEND_TAG:-N/A}\` |
+          | web-app | \`${CURRENT_FRONTEND_TAG:-N/A}\` | \`${FRONTEND_TAG:-N/A}\` |
+          | agentgateway | \`${CURRENT_GATEWAY_TAG:-N/A}\` | \`${GATEWAY_TAG:-N/A}\` |
+          | postgres | \`${CURRENT_POSTGRES_TAG:-N/A}\` | \`${POSTGRES_TAG:-N/A}\` |
+
+          Re-run with \`dry_run: false\` to apply the upgrade.
+          EOF
+
+          elif [ "$UPGRADE_RESULT" = "success" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Upgrade Eval Environment: Success
+
+          | Property | Value |
+          |----------|-------|
+          | **Environment ID** | \`${ENV_ID}\` |
+          | **Region** | \`${REGION}\` |
+          | **Project** | \`${GCP_PROJECT_ID}\` |
+          | **AR URL** | \`${AR_URL:-N/A}\` |
+          | **Pre-upgrade revision** | \`${PRE_REVISION:-N/A}\` |
+          | **Post-upgrade revision** | \`${POST_REVISION:-N/A}\` |
+          | **Rollback target** | \`${PRE_REVISION:-N/A}\` |
+
+          ### Images Upgraded
+
+          | Component | Previous Tag | New Tag |
+          |-----------|-------------|---------|
+          | platform-api | \`${CURRENT_BACKEND_TAG:-N/A}\` | \`${BACKEND_TAG:-N/A}\` |
+          | web-app | \`${CURRENT_FRONTEND_TAG:-N/A}\` | \`${FRONTEND_TAG:-N/A}\` |
+          | agentgateway | \`${CURRENT_GATEWAY_TAG:-N/A}\` | \`${GATEWAY_TAG:-N/A}\` |
+          | postgres | \`${CURRENT_POSTGRES_TAG:-N/A}\` | \`${POSTGRES_TAG:-N/A}\` |
+
+          ### Access
+
+          Application URL: http://${INGRESS_HOST:-<port-forward required>}
+
+          ### Rollback
+
+          If needed, rollback to revision \`${PRE_REVISION:-N/A}\`:
+          \`\`\`bash
+          gcloud container clusters get-credentials biznez-eval-${ENV_ID} --region ${REGION} --project ${GCP_PROJECT_ID}
+          helm rollback ${RELEASE} ${PRE_REVISION:-N/A} -n ${NAMESPACE} --wait --timeout 300s
+          \`\`\`
+          EOF
+
+          else
+            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Upgrade Eval Environment: Failed
+
+          The upgrade did not complete successfully. The previous revision may still be serving.
+
+          | Property | Value |
+          |----------|-------|
+          | **Environment ID** | \`${ENV_ID}\` |
+          | **Region** | \`${REGION}\` |
+          | **Project** | \`${GCP_PROJECT_ID}\` |
+          | **Pre-upgrade revision** | \`${PRE_REVISION:-N/A}\` (rollback to this) |
+          | **Post-upgrade revision** | \`${POST_REVISION:-N/A}\` (failed) |
+
+          ### Immediate Actions
+
+          1. Check pod status:
+          \`\`\`bash
+          gcloud container clusters get-credentials biznez-eval-${ENV_ID} --region ${REGION} --project ${GCP_PROJECT_ID}
+          kubectl get pods -n ${NAMESPACE}
+          \`\`\`
+
+          2. Check migration logs:
+          \`\`\`bash
+          kubectl logs -l app.kubernetes.io/component=backend -n ${NAMESPACE} -c run-migrations
+          \`\`\`
+
+          3. Rollback to previous revision:
+          \`\`\`bash
+          helm rollback ${RELEASE} ${PRE_REVISION:-N/A} -n ${NAMESPACE} --wait --timeout 300s
+          \`\`\`
+
+          4. If DB is in a partially migrated state, do NOT retry automatically.
+             Review migration logs and database state before any further action.
+          EOF
+          fi
