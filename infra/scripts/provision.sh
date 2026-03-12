@@ -840,7 +840,14 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
         echo "app_url=http://${INGRESS_HOST}" >> "$GITHUB_OUTPUT"
     fi
     echo "admin_username=admin" >> "$GITHUB_OUTPUT"
-    # Password NOT echoed — summary shows kubectl retrieval command
+
+    # Retrieve admin password from K8s secret so it can be shown in the summary
+    ADMIN_PASS_OUT=$(kubectl get secret biznez-eval-admin-creds -n "$NAMESPACE" \
+        -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null) || true
+    if [ -n "${ADMIN_PASS_OUT:-}" ]; then
+        echo "admin_password=$ADMIN_PASS_OUT" >> "$GITHUB_OUTPUT"
+        unset ADMIN_PASS_OUT
+    fi
 
     # Resolve service names via label selectors (for fallback port-forward instructions)
     FRONTEND_SVC=$(kubectl get svc -n "$NAMESPACE" \

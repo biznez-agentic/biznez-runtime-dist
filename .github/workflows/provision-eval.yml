@@ -148,6 +148,7 @@ jobs:
     outputs:
       app_url: ${{ steps.provision.outputs.app_url }}
       admin_username: ${{ steps.provision.outputs.admin_username }}
+      admin_password: ${{ steps.provision.outputs.admin_password }}
       frontend_portfwd: ${{ steps.provision.outputs.frontend_portfwd }}
       backend_portfwd: ${{ steps.provision.outputs.backend_portfwd }}
       retrieval_cmd: ${{ steps.provision.outputs.retrieval_cmd }}
@@ -275,6 +276,7 @@ jobs:
           DEPLOY_RESULT: ${{ needs.deploy-runtime.result }}
           APP_URL: ${{ needs.deploy-runtime.outputs.app_url }}
           ADMIN_USERNAME: ${{ needs.deploy-runtime.outputs.admin_username }}
+          ADMIN_PASSWORD: ${{ needs.deploy-runtime.outputs.admin_password }}
           FRONTEND_PORTFWD: ${{ needs.deploy-runtime.outputs.frontend_portfwd }}
           BACKEND_PORTFWD: ${{ needs.deploy-runtime.outputs.backend_portfwd }}
           RETRIEVAL_CMD: ${{ needs.deploy-runtime.outputs.retrieval_cmd }}
@@ -304,15 +306,11 @@ jobs:
 
           if [ -n "$APP_URL" ]; then
             cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          **Application URL:** ${APP_URL}
-
-          1. Open ${APP_URL} in your browser
-          2. Login with username: \`${ADMIN_USERNAME:-admin}\`
-          3. Retrieve admin password:
-          \`\`\`bash
-          gcloud container clusters get-credentials ${CLUSTER_NAME} --region ${NOTIFY_REGION} --project ${PROJECT_ID}
-          ${RETRIEVAL_CMD:-kubectl get secret biznez-eval-admin-creds -n biznez -o jsonpath='{.data.password}' | base64 -d}
-          \`\`\`
+          | | |
+          |----------|-------|
+          | **URL** | ${APP_URL} |
+          | **Username** | \`${ADMIN_USERNAME:-admin}\` |
+          | **Password** | \`${ADMIN_PASSWORD:-<see retrieval command below>}\` |
 
           **Pre-configured:**
           - Admin account (is_admin=true)
@@ -322,20 +320,16 @@ jobs:
           EOF
           else
             cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          1. Get GKE credentials:
+          | | |
+          |----------|-------|
+          | **Username** | \`${ADMIN_USERNAME:-admin}\` |
+          | **Password** | \`${ADMIN_PASSWORD:-<see retrieval command below>}\` |
+
+          **Connect via port-forward:**
           \`\`\`bash
           gcloud container clusters get-credentials ${CLUSTER_NAME} --region ${NOTIFY_REGION} --project ${PROJECT_ID}
-          \`\`\`
-
-          2. Port-forward services:
-          \`\`\`bash
           ${FRONTEND_PORTFWD:-kubectl port-forward svc/biznez-frontend 8080:80 -n biznez}
           ${BACKEND_PORTFWD:-kubectl port-forward svc/biznez-backend 8000:8000 -n biznez}
-          \`\`\`
-
-          3. Retrieve admin password:
-          \`\`\`bash
-          ${RETRIEVAL_CMD:-kubectl get secret biznez-eval-admin-creds -n biznez -o jsonpath='{.data.password}' | base64 -d}
           \`\`\`
           EOF
           fi
