@@ -841,10 +841,12 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     fi
     echo "admin_username=admin" >> "$GITHUB_OUTPUT"
 
-    # Retrieve admin password from K8s secret so it can be shown in the summary
+    # Retrieve admin password from K8s secret so it can be shown in the summary.
+    # Mask it first so it doesn't appear in plain text in workflow logs.
     ADMIN_PASS_OUT=$(kubectl get secret biznez-eval-admin-creds -n "$NAMESPACE" \
         -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null) || true
     if [ -n "${ADMIN_PASS_OUT:-}" ]; then
+        echo "::add-mask::$ADMIN_PASS_OUT"
         echo "admin_password=$ADMIN_PASS_OUT" >> "$GITHUB_OUTPUT"
         unset ADMIN_PASS_OUT
     fi
