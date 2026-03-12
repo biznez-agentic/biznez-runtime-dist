@@ -17,7 +17,7 @@ images:
     sourceRepo: "europe-west2-docker.pkg.dev/mcpserver-469909/biznez-backend/platform-api"
     targetRepo: "biznez/platform-api"
     releaseRepo: ""
-    tag: "dev-826aa5bcc765f66f1aca751eae9553227ecae6fa"
+    tag: "dev-02f15ad32a690ca58769fc20fb0ed26874eefa8a"
     imageDigest: ""
     indexDigest: ""
   - name: web-app
