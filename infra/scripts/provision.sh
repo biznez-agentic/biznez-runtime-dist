@@ -347,9 +347,11 @@ HELM_ARGS=(
     --set gateway.image.tag="$GATEWAY_TAG"
 )
 
-# Use the deployer SA only when Step 5.6 created it (requires --cluster-endpoint)
+# Use the deployer SA only when Step 5.6 created it (requires --cluster-endpoint).
+# Set rbac.create=false so Helm doesn't try to create the SA that already exists
+# without Helm ownership labels (which would cause an adoption conflict).
 if [ -n "${CLUSTER_ENDPOINT:-}" ]; then
-    HELM_ARGS+=(--set rbac.serviceAccountName=biznez-runtime-deployer)
+    HELM_ARGS+=(--set rbac.create=false --set rbac.serviceAccountName=biznez-runtime-deployer)
 fi
 
 if [ -n "${INGRESS_HOST:-}" ]; then
