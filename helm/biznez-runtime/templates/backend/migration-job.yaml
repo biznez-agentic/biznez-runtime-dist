@@ -22,7 +22,7 @@ spec:
         {{- include "biznez.componentLabels" (dict "root" . "component" "migration") | nindent 8 }}
     spec:
       restartPolicy: Never
-      {{- if .Values.rbac.create }}
+      {{- if or .Values.rbac.create .Values.rbac.serviceAccountName }}
       serviceAccountName: {{ include "biznez.serviceAccountName" . }}
       {{- end }}
       securityContext:

@@ -26,7 +26,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      {{- if .Values.rbac.create }}
+      {{- if or .Values.rbac.create .Values.rbac.serviceAccountName }}
       serviceAccountName: {{ include "biznez.serviceAccountName" . }}
       {{- end }}
       securityContext:
