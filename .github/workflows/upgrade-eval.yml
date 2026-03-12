@@ -626,6 +626,31 @@ jobs:
 
           echo "=== Health Checks: PASSED ==="
 
+          # 5. Image drift check — verify live deployment images match Helm manifest
+          #    Catches cases where kubectl/manual changes mutated images outside Helm.
+          echo "Checking for image drift..."
+          DRIFT=0
+          EXPECTED_REGISTRY=$(helm get values "$RELEASE" -n "$NAMESPACE" -o json \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('global',{}).get('imageRegistry',''))" 2>/dev/null) || true
+          for COMPONENT in backend frontend gateway; do
+            DEPLOY_NAME="${RELEASE}-biznez-runtime-${COMPONENT}"
+            LIVE_IMAGE=$(kubectl get deploy "$DEPLOY_NAME" -n "$NAMESPACE" \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null) || continue
+            if [ -n "$EXPECTED_REGISTRY" ] && ! echo "$LIVE_IMAGE" | grep -q "^${EXPECTED_REGISTRY}/"; then
+              echo "::error::Image drift on $COMPONENT — expected registry prefix: $EXPECTED_REGISTRY"
+              echo "  Live image: $LIVE_IMAGE"
+              DRIFT=1
+            else
+              echo "  $COMPONENT: OK ($LIVE_IMAGE)"
+            fi
+          done
+          if [ "$DRIFT" = "1" ]; then
+            echo "::error::A process outside Helm modified the deployment images."
+            echo "::error::Re-run this workflow to re-apply the correct images."
+            exit 1
+          fi
+          echo "Image drift check: OK"
+
       # -----------------------------------------------------------------
       # Step 14: MCP/Gateway diagnostics (best-effort)
       # -----------------------------------------------------------------
