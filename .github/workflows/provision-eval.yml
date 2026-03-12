@@ -281,6 +281,11 @@ jobs:
           BACKEND_PORTFWD: ${{ needs.deploy-runtime.outputs.backend_portfwd }}
           RETRIEVAL_CMD: ${{ needs.deploy-runtime.outputs.retrieval_cmd }}
         run: |
+          # Mask the password in this job's runner (add-mask doesn't cross job boundaries)
+          if [ -n "${ADMIN_PASSWORD:-}" ]; then
+            echo "::add-mask::$ADMIN_PASSWORD"
+          fi
+
           if [ "$DEPLOY_RESULT" = "success" ]; then
             STATUS="Success"
           elif [ "$INFRA_RESULT" = "success" ]; then
@@ -341,7 +346,7 @@ jobs:
           > **Note:** Password could not be retrieved automatically. Run:
           > \`\`\`
           > gcloud container clusters get-credentials ${CLUSTER_NAME} --region ${NOTIFY_REGION} --project ${PROJECT_ID}
-          > kubectl get secret biznez-eval-admin-creds -n biznez -o jsonpath='{.data.password}' | base64 -d
+          > ${RETRIEVAL_CMD:-kubectl get secret biznez-eval-admin-creds -n biznez -o jsonpath='{.data.password}' | base64 -d}
           > \`\`\`
           EOF
           fi
