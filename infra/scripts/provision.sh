@@ -370,6 +370,20 @@ if [ -n "${INGRESS_HOST:-}" ]; then
     )
 fi
 
+# ---------------------------------------------------------------------------
+# Phase 1: MCP Gateway ConfigMap integration
+# Activate real K8s writes so gateway routes are applied, not just logged.
+# ---------------------------------------------------------------------------
+HELM_ARGS+=(
+    --set backend.config.configmapApplyMode=k8s
+)
+
+if [ -n "${INGRESS_HOST:-}" ]; then
+    HELM_ARGS+=(
+        --set backend.config.gatewayCorsOrigins="http://${INGRESS_HOST}"
+    )
+fi
+
 helm upgrade --install "$RELEASE" "$CHART_DIR" \
     -f "$VALUES_FILE" "${HELM_ARGS[@]}" \
     -n "$NAMESPACE" --wait --timeout 600s || {
