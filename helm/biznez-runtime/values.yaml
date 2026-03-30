@@ -82,6 +82,15 @@ backend:
     agentTimeoutSeconds: "300"
     prometheusEnabled: "true"
     prometheusPort: "9090"
+    # MCP Gateway ConfigMap integration (Phase 1)
+    # See claud_doc/packaging/MCPplumbing/phase1-eval-implementation-plan.md
+    gatewayApplyMode: "configmap"         # Code default. Set for explicitness.
+    configmapApplyMode: "dryrun"          # MUST override to "k8s" for live environments.
+    # gatewayConfigmapName: ""            # Auto-derived: {{ fullname }}-gateway. Do not set.
+    # gatewayConfigmapNamespace: ""       # Auto-derived: {{ .Release.Namespace }}. Do not set.
+    # gatewayConfigmapKey: "config.yaml"  # Code default is correct. Do not set.
+    gatewayEnabledEnvironments: "development"
+    gatewayCorsOrigins: ""                # MUST be set for eval/prod (e.g., http://<IP>.nip.io)
 
   # Secret management
   existingSecret: ""  # K8s Secret name; if set, chart does NOT create a Secret

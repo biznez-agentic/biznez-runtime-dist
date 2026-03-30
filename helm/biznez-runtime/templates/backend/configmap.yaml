@@ -30,3 +30,15 @@ data:
   DB_POOL_SIZE: {{ .Values.postgres.pool.size | quote }}
   DB_MAX_OVERFLOW: {{ .Values.postgres.pool.maxOverflow | quote }}
   DB_POOL_RECYCLE: {{ .Values.postgres.pool.poolRecycle | quote }}
+  {{- /* MCP Gateway ConfigMap integration (Phase 1) */ -}}
+  {{- if .Values.gateway.enabled }}
+  GATEWAY_APPLY_MODE: {{ .Values.backend.config.gatewayApplyMode | default "configmap" | quote }}
+  CONFIGMAP_APPLY_MODE: {{ .Values.backend.config.configmapApplyMode | default "dryrun" | quote }}
+  GATEWAY_CONFIGMAP_NAME: {{ .Values.backend.config.gatewayConfigmapName | default (printf "%s-gateway" (include "biznez.fullname" .)) | quote }}
+  GATEWAY_CONFIGMAP_NAMESPACE: {{ .Values.backend.config.gatewayConfigmapNamespace | default .Release.Namespace | quote }}
+  GATEWAY_CONFIGMAP_KEY: {{ .Values.backend.config.gatewayConfigmapKey | default "config.yaml" | quote }}
+  GATEWAY_ENABLED_ENVIRONMENTS: {{ .Values.backend.config.gatewayEnabledEnvironments | default "development" | quote }}
+  {{- if .Values.backend.config.gatewayCorsOrigins }}
+  GATEWAY_CORS_ORIGINS: {{ .Values.backend.config.gatewayCorsOrigins | quote }}
+  {{- end }}
+  {{- end }}
